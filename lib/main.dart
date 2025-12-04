@@ -1,15 +1,23 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:developer';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+const Color hlOrange = Color(0xFFFF9D00); 
+const Color hlBg = Color(0xFF1C1C1C);     
+const Color hlPanel = Color(0xFF2B2B2B);  
+const Color hlGreen = Color(0xFF62B236);  
+const Color hlRed = Color(0xFFD92424);    
+
+// KONFIGURASI SERVER (Ganti dengan IP Laptop Anda)
+const String apiBaseUrl = "http://10.0.2.2:8000/api"; 
+const String storageBaseUrl = "http://10.0.2.2:8000/storage/";
+const String apiKey = "dalit123";
 
 void main() {
-  // Pastikan package intl sudah ditambahkan di pubspec.yaml:
-  // dependencies:
-  //   flutter:
-  //     sdk: flutter
-  //   http: ^1.2.1
-  //   intl: ^0.19.0
   runApp(const MyApp());
 }
 
@@ -19,10 +27,33 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'HELPDESK POLINDRA',
+      title: 'Helpdesk Polindra',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: hlBg,
+        colorScheme: const ColorScheme.dark(
+          primary: hlOrange,
+          secondary: hlGreen,
+          surface: hlPanel,
+          error: hlRed,
+        ),
+        textTheme: TextTheme(
+          displayLarge: GoogleFonts.orbitron(fontWeight: FontWeight.bold, color: hlOrange),
+          bodyLarge: GoogleFonts.shareTechMono(fontSize: 16, color: Colors.white),
+          bodyMedium: GoogleFonts.shareTechMono(fontSize: 14, color: Colors.white70),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.black,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          border: OutlineInputBorder(borderSide: const BorderSide(color: hlOrange), borderRadius: BorderRadius.circular(4)),
+          enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: hlOrange.withOpacity(0.5)), borderRadius: BorderRadius.circular(4)),
+          focusedBorder: OutlineInputBorder(borderSide: const BorderSide(color: hlOrange, width: 2), borderRadius: BorderRadius.circular(4)),
+          labelStyle: const TextStyle(color: hlOrange),
+          hintStyle: TextStyle(color: hlOrange.withOpacity(0.5)),
+        ),
       ),
       home: const CariTiketPage(),
     );
@@ -38,714 +69,559 @@ class CariTiketPage extends StatefulWidget {
 
 class _CariTiketPageState extends State<CariTiketPage> {
   final TextEditingController _controller = TextEditingController();
+  final TextEditingController _commentController = TextEditingController();
+  
   Map<String, dynamic>? tiketData;
+  String? deadlineTimer;
   bool loading = false;
+  bool sendingComment = false;
   String? errorMessage;
 
-  // 🔗 Ganti URL ini sesuai endpoint API kamu
-  final String baseUrl = "http://10.0.2.2:8000/api/tiket";
-  // 🔑 Ganti dengan API Key yang benar dari .env Laravel Anda.
-  final String apiKey = "dalit123";
-
-  // URL Base untuk mengambil file gambar/lampiran
-  // Ganti ini dengan domain Laravel Anda yang sebenarnya
-  final String storageBaseUrl = "http://10.0.2.2:8000/storage/";
+  // --- FUNGSI API ---
 
   Future<void> fetchTiket(String input) async {
-    if (input.trim().isEmpty) {
-      setState(() {
-        errorMessage = "Mohon masukkan ID atau Nomor Tiket.";
-        tiketData = null;
-      });
-      return;
-    }
+    if (input.trim().isEmpty) return _setError("INPUT SUBJECT ID");
 
-    setState(() {
-      loading = true;
-      errorMessage = null;
-      tiketData = null;
-    });
+    setState(() { loading = true; errorMessage = null; tiketData = null; });
 
     try {
-      final response = await http.get(
-        Uri.parse("$baseUrl/$input"),
-        headers: {'Accept': 'application/json', 'API_KEY_MAHASISWA': apiKey},
-      );
+      final url = Uri.parse("$apiBaseUrl/tiket/${Uri.encodeComponent(input.trim())}");
+      log("Connecting to: $url");
+
+      final response = await http.get(url, headers: {'Accept': 'application/json', 'API_KEY_MAHASISWA': apiKey});
+
+      log("Response Body: ${response.body}"); // Cek Log untuk memastikan data 'detail' ada
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         if (data['success'] == true && data['data'] != null) {
           setState(() {
             tiketData = data['data'];
+            deadlineTimer = data['deadline_timer'];
           });
         } else {
-          setState(() {
-            errorMessage = data['message'] ?? "Data tidak ditemukan.";
-          });
+          _setError(data['message'] ?? "SUBJECT NOT FOUND");
         }
-      } else if (response.statusCode == 404) {
-        setState(() {
-          errorMessage =
-              "Tiket **$input** tidak ditemukan. Coba cek kembali ID/Nomor.";
-        });
-      } else if (response.statusCode == 401) {
-        setState(() {
-          errorMessage = "Unauthorized: API Key tidak valid.";
-        });
       } else {
-        setState(() {
-          errorMessage = "Terjadi kesalahan server (${response.statusCode}).";
-        });
+        _setError("CONNECTION ERROR (${response.statusCode})");
       }
     } catch (e) {
-      print('Fetch Error: $e');
-      setState(() {
-        errorMessage =
-            "Gagal terhubung ke server. Pastikan server aktif dan alamat API benar.";
-      });
+      _setError("NETWORK FAILURE: $e");
     } finally {
-      setState(() {
-        loading = false;
-      });
+      setState(() { loading = false; });
     }
   }
 
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
+  Future<void> postComment() async {
+    if (_commentController.text.trim().isEmpty) return;
+    setState(() { sendingComment = true; });
+
+    try {
+      final id = tiketData!['id'];
+      final url = Uri.parse("$apiBaseUrl/tiket/$id/komentar");
+      
+      final response = await http.post(
+        url,
+        headers: {'Accept': 'application/json', 'API_KEY_MAHASISWA': apiKey},
+        body: {'komentar': _commentController.text}
+      );
+
+      if (response.statusCode == 200) {
+        _commentController.clear();
+        fetchTiket(tiketData!['no_tiket']); // Refresh data
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Transmission Failed"), backgroundColor: hlRed));
+      }
+    } catch (e) {
+      log("Error: $e");
+    } finally {
+      setState(() { sendingComment = false; });
+    }
   }
+
+  void _setError(String msg) {
+    setState(() { errorMessage = msg; });
+  }
+
+  // --- TAMPILAN UTAMA ---
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Helpdesk Polindra',
-          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),
-        ),
-        backgroundColor: Colors.deepPurple,
-        foregroundColor: Colors.white,
+        title: Text("HELPDESK // POLINDRA", style: GoogleFonts.orbitron(letterSpacing: 2, color: hlOrange, fontSize: 20)),
+        backgroundColor: Colors.black,
+        bottom: PreferredSize(preferredSize: const Size.fromHeight(2), child: Container(color: hlOrange, height: 2)),
         centerTitle: true,
-        elevation: 8,
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Cari Status Tiket Anda',
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.w800,
-                color: Colors.deepPurple.shade700,
-              ),
+      body: Column(
+        children: [
+          _buildSearchBar(),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: _buildContent(),
             ),
-            const SizedBox(height: 15),
-            TextField(
-              controller: _controller,
-              keyboardType: TextInputType.text,
-              decoration: InputDecoration(
-                hintText: 'Masukkan ID atau No Tiket',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(color: Colors.deepPurple),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: const BorderSide(
-                    color: Colors.deepPurple,
-                    width: 2,
-                  ),
-                ),
-                prefixIcon: const Icon(
-                  Icons.confirmation_number,
-                  color: Colors.deepPurple,
-                ),
-                suffixIcon: IconButton(
-                  icon: loading
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.search, color: Colors.deepPurple),
-                  onPressed: loading
-                      ? null
-                      : () {
-                          fetchTiket(_controller.text);
-                        },
-                ),
-                filled: true,
-                fillColor: Colors.deepPurple.shade50.withOpacity(0.5),
-              ),
-              onSubmitted: loading ? null : (value) => fetchTiket(value),
-            ),
-            const SizedBox(height: 30),
-            _buildResultWidget(),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  // 📦 Widget untuk menampilkan hasil (loading, error, atau data)
-  Widget _buildResultWidget() {
-    if (loading) {
-      return _buildLoadingPlaceholder();
-    } else if (errorMessage != null) {
-      return _buildErrorWidget(errorMessage!);
-    } else if (tiketData != null) {
-      return _buildTiketDetail(tiketData!);
-    } else {
-      return Center(
-        child: Column(
-          children: [
-            Icon(Icons.search_rounded, size: 80, color: Colors.grey.shade300),
-            const SizedBox(height: 10),
-            Text(
-              'Silakan masukkan ID atau Nomor Tiket untuk melacak status.',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey.shade600),
+  Widget _buildSearchBar() {
+    return Container(
+      color: const Color(0xFF111111),
+      padding: const EdgeInsets.all(20),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _controller,
+              style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 18),
+              decoration: const InputDecoration(
+                labelText: "ENTER TICKET ID",
+                prefixIcon: Icon(Icons.qr_code_scanner, color: hlOrange),
+              ),
+              onSubmitted: (val) => fetchTiket(val),
             ),
-          ],
+          ),
+          const SizedBox(width: 12),
+          InkWell(
+            onTap: () => fetchTiket(_controller.text),
+            child: Container(
+              height: 56, width: 60,
+              decoration: BoxDecoration(
+                color: hlOrange.withOpacity(0.1),
+                border: Border.all(color: hlOrange),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: loading 
+                ? const Center(child: CircularProgressIndicator(color: hlOrange))
+                : const Icon(Icons.search, color: hlOrange, size: 30),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContent() {
+    if (errorMessage != null) {
+      return Center(
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(border: Border.all(color: hlRed), color: hlRed.withOpacity(0.1)),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.warning, color: hlRed, size: 50),
+              const SizedBox(height: 16),
+              Text("WARNING: $errorMessage", style: GoogleFonts.shareTechMono(color: hlRed, fontSize: 18), textAlign: TextAlign.center),
+            ],
+          ),
         ),
       );
     }
-  }
 
-  // 📝 Widget Detail Tiket
-  Widget _buildTiketDetail(Map<String, dynamic> data) {
-    final riwayat = (data['riwayat_status'] as List?) ?? [];
-    final komentar = (data['komentar'] as List?) ?? [];
-
-    final latestStatus = riwayat.isNotEmpty
-        ? riwayat.first['status']
-        : 'Menunggu Respon';
-
-    Color statusColor;
-    IconData statusIcon;
-    switch (latestStatus.toLowerCase()) {
-      case 'selesai':
-        statusColor = Colors.green.shade700;
-        statusIcon = Icons.check_circle;
-        break;
-      case 'diproses':
-      case 'dikerjakan':
-        statusColor = Colors.orange.shade700;
-        statusIcon = Icons.hourglass_top;
-        break;
-      case 'ditolak':
-        statusColor = Colors.red.shade700;
-        statusIcon = Icons.cancel;
-        break;
-      default:
-        statusColor = Colors.blue.shade700;
-        statusIcon = Icons.pending_actions;
-        break;
-    }
-
-    // Asumsi: field 'lampiran' berisi path file relatif
-    final String? lampiranPath = data['lampiran'];
-
-    return Card(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(15),
-        side: BorderSide(color: statusColor, width: 1.5),
-      ),
-      elevation: 8,
-      child: Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header Tiket
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Flexible(
-                  child: Text(
-                    "Tiket #${data['no_tiket'] ?? 'N/A'}",
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                      color: statusColor,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Chip(
-                  avatar: Icon(statusIcon, color: Colors.white, size: 18),
-                  label: Text(
-                    latestStatus.toUpperCase(),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                  ),
-                  backgroundColor: statusColor,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              ],
-            ),
-            const Divider(height: 25, thickness: 1.5, color: Colors.black12),
-
-            // Detail Ringkas
-            Text(
-              data['judul'] ?? 'Informasi Umum',
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            _buildDetailRow(
-              'Layanan',
-              data['layanan']?['nama'] ?? 'Layanan Umum',
-              Icons.category_rounded,
-            ),
-            _buildDetailRow(
-              'Prioritas',
-              data['prioritas'] ?? 'Normal',
-              Icons.priority_high_rounded,
-            ),
-            _buildDetailRow(
-              'Tanggal Dibuat',
-              _formatDate(data['created_at']),
-              Icons.calendar_today_rounded,
-            ),
-            _buildDetailRow(
-              'Deskripsi',
-              data['deskripsi']?.toString().trim().isNotEmpty == true
-                  ? data['deskripsi']
-                  : 'Tidak ada deskripsi tambahan.',
-              Icons.description_rounded,
-              isMultiline: true,
-            ),
-
-            const SizedBox(height: 20),
-
-            // Lampiran/Gambar
-            if (lampiranPath != null && lampiranPath.isNotEmpty)
-              _buildLampiranSection(lampiranPath),
-
-            if (lampiranPath != null && lampiranPath.isNotEmpty)
+    if (tiketData == null) {
+      return Center(
+        child: Opacity(
+          opacity: 0.3,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.science_outlined, size: 100, color: hlOrange),
               const SizedBox(height: 20),
-
-            // Riwayat Status (Timeline)
-            if (riwayat.isNotEmpty) _buildRiwayatStatusSection(riwayat),
-
-            const SizedBox(height: 20),
-
-            // Komentar/Diskusi
-            if (komentar.isNotEmpty) _buildKomentarSection(komentar),
-          ],
+              Text("AWAITING DATA INPUT...", style: GoogleFonts.orbitron(color: hlOrange, fontSize: 16)),
+            ],
+          ),
         ),
-      ),
-    );
+      );
+    }
+
+    return _buildTicketDetails(tiketData!);
   }
 
-  // 🖼️ Widget Lampiran
-  Widget _buildLampiranSection(String path) {
-    // Membangun URL lengkap
-    final fullUrl = '$storageBaseUrl$path';
+  Widget _buildTicketDetails(Map<String, dynamic> data) {
+    // DATA UTAMA
+    final pemohon = data['pemohon'] ?? {};
+    final mahasiswa = data['mahasiswa'] ?? pemohon['mahasiswa'] ?? {};
+    final prodi = mahasiswa['program_studi'] ?? {};
+    final jurusan = prodi['jurusan'] ?? {};
+    final layananNama = data['layanan']?['nama'] ?? 'UNKNOWN';
+    final unit = data['layanan']?['unit'] ?? data['unit'] ?? {}; // Unit dari relasi layanan
+    final detailLayanan = data['detail']; // INI PENTING (Data Spesifik)
 
-    // Cek ekstensi file sederhana untuk menentukan ikon
-    final extension = path.toLowerCase().split('.').last;
-    IconData fileIcon;
-    if (['jpg', 'jpeg', 'png', 'gif'].contains(extension)) {
-      fileIcon = Icons.image_rounded;
-    } else if (extension == 'pdf') {
-      fileIcon = Icons.picture_as_pdf_rounded;
-    } else if (extension == 'doc' || extension == 'docx') {
-      fileIcon = Icons.text_snippet_rounded;
-    } else {
-      fileIcon = Icons.attach_file_rounded;
-    }
+    // STATUS
+    final riwayat = (data['riwayat_status'] as List?) ?? [];
+    String status = data['status'] ?? 'PENDING';
+    if (riwayat.isNotEmpty) status = riwayat[0]['status'];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Icon(fileIcon, color: Colors.deepPurple, size: 24),
-            const SizedBox(width: 8),
-            const Text(
-              "Lampiran",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-
-        // Menampilkan gambar jika ekstensi adalah gambar
-        if (['jpg', 'jpeg', 'png', 'gif'].contains(extension))
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.network(
-              fullUrl,
-              height: 200,
-              width: double.infinity,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) {
-                return Container(
-                  height: 100,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: Text(
-                    "Gagal memuat gambar. Cek koneksi atau path URL: $fullUrl",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.red.shade600),
-                  ),
-                );
-              },
-            ),
-          )
-        else
-          // Untuk file non-gambar (PDF, DOCX, dll.)
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.blueGrey.shade50,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.blueGrey.shade200),
-            ),
-            child: Row(
-              children: [
-                Icon(fileIcon, color: Colors.blueGrey.shade700),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    "Lampiran (${extension.toUpperCase()}) tersedia.",
-                    style: TextStyle(color: Colors.blueGrey.shade800),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const Icon(Icons.download_rounded, color: Colors.deepPurple),
-              ],
-            ),
+        // 1. HEADER STATUS
+        _HevCard(
+          title: "SYSTEM STATUS",
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("#${data['no_tiket']}", style: GoogleFonts.orbitron(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
+              _StatusBadge(status: status),
+            ],
           ),
-      ],
-    );
-  }
-
-  // 🗣️ Widget Komentar
-  Widget _buildKomentarSection(List<dynamic> komentar) {
-    return ExpansionTile(
-      initiallyExpanded: true,
-      tilePadding: EdgeInsets.zero,
-      leading: Icon(Icons.comment_rounded, color: Colors.deepPurple.shade400),
-      title: Text(
-        "Diskusi & Komentar (${komentar.length})",
-        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-      ),
-      children: [
-        ListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: komentar.length,
-          itemBuilder: (context, index) {
-            final c = komentar[index];
-            // 🚨 Menggunakan 'pengirim' sesuai perbaikan backend Laravel
-            final userName = c['pengirim']?['name'] ?? 'Petugas Helpdesk';
-            final userRole =
-                c['pengirim']?['role'] ??
-                'Admin'; // Asumsi role ada di objek pengirim
-            final commentTime = _formatDateTime(c['created_at']);
-            final commentText = c['komentar'] ?? 'Tidak ada isi komentar.';
-
-            return Padding(
-              padding: const EdgeInsets.symmetric(
-                vertical: 8.0,
-                horizontal: 8.0,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      CircleAvatar(
-                        backgroundColor: userRole == 'Mahasiswa'
-                            ? Colors.blue.shade100
-                            : Colors.deepPurple.shade100,
-                        radius: 12,
-                        child: Icon(
-                          Icons.person,
-                          size: 16,
-                          color: userRole == 'Mahasiswa'
-                              ? Colors.blue.shade700
-                              : Colors.deepPurple.shade700,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          "$userName (${userRole})",
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ),
-                      Text(
-                        commentTime,
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: Colors.grey.shade600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 32.0, top: 4.0),
-                    child: Text(
-                      commentText,
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ),
-                  const Divider(height: 10, thickness: 0.5),
-                ],
-              ),
-            );
-          },
         ),
-      ],
-    );
-  }
+        const SizedBox(height: 16),
 
-  // 🕰️ Widget Riwayat Status (dibuat seperti timeline)
-  Widget _buildRiwayatStatusSection(List<dynamic> riwayat) {
-    // Balik urutan agar timeline dimulai dari status tertua (ASC)
-    final reversedRiwayat = riwayat.reversed.toList();
+        // 2. TIMER (JIKA ADA)
+        if (status == 'Diselesaikan_oleh_PIC' && deadlineTimer != null)
+           _HevCard(
+             title: "CRITICAL TIMER",
+             borderColor: hlRed,
+             child: Column(
+               children: [
+                 Text("AUTO-CLOSE SEQUENCE INITIATED", style: GoogleFonts.shareTechMono(color: hlRed)),
+                 const SizedBox(height: 8),
+                 CountdownTimer(deadlineStr: deadlineTimer!),
+               ],
+             ),
+           ),
+        if (status == 'Diselesaikan_oleh_PIC' && deadlineTimer != null) const SizedBox(height: 16),
 
-    return ExpansionTile(
-      initiallyExpanded: true, // Detail Riwayat Status langsung terbuka
-      tilePadding: EdgeInsets.zero,
-      leading: Icon(Icons.timeline_rounded, color: Colors.deepPurple.shade400),
-      title: Text(
-        "Riwayat Status (${riwayat.length})",
-        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-      ),
-      children: [
-        ListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: reversedRiwayat.length,
-          itemBuilder: (context, index) {
-            final s = reversedRiwayat[index];
-            final isLast = index == reversedRiwayat.length - 1;
-            final isFirst = index == 0;
-            final userName = s['user']?['name'] ?? 'System';
-            final userRole = s['user']?['role'] ?? 'System';
-
-            Color itemColor = isLast
-                ? Colors.green.shade600
-                : Colors.deepPurple.shade300;
-            if (s['status'].toLowerCase() == 'ditolak') {
-              itemColor = Colors.red.shade600;
-            }
-
-            return IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Timeline Connector
-                  Column(
-                    children: [
-                      Container(
-                        width: 2.0,
-                        height: 8.0,
-                        color: isFirst ? Colors.transparent : itemColor,
-                      ),
-                      Container(
-                        padding: const EdgeInsets.all(3.0),
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: Colors.white,
-                          border: Border.all(color: itemColor, width: 2.0),
-                        ),
-                        child: Icon(
-                          isLast ? Icons.star_rounded : Icons.circle,
-                          size: 10.0,
-                          color: itemColor,
-                        ),
-                      ),
-                      Expanded(
-                        child: Container(
-                          width: 2.0,
-                          color: isLast ? Colors.transparent : itemColor,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(width: 10),
-
-                  // Status Content
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 15.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            s['status']?.toUpperCase() ??
-                                'STATUS TIDAK DIKETAHUI',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
-                              color: itemColor,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            "Oleh: ${userName} (${userRole})",
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.black87,
-                            ),
-                          ),
-                          Text(
-                            _formatDateTime(s['created_at']),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
+        // 3. INFO PEMOHON
+        _HevCard(
+          title: "PERSONNEL DATA",
+          child: Column(
+            children: [
+              _InfoRow("NAMA", pemohon['name'] ?? mahasiswa['nama'] ?? 'N/A'),
+              _InfoRow("ID (NIM)", mahasiswa['nim'] ?? 'N/A'),
+              _InfoRow("JURUSAN", jurusan['nama_jurusan'] ?? 'N/A'),
+              _InfoRow("PRODI", prodi['program_studi'] ?? 'N/A'),
+            ],
+          ),
         ),
+        const SizedBox(height: 16),
+
+        // 4. DETAIL TIKET UMUM
+        _HevCard(
+          title: "REQUEST PARAMETERS",
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _InfoRow("LAYANAN", layananNama),
+              _InfoRow("UNIT", unit['nama_unit'] ?? 'N/A'), // Unit muncul disini
+              const Divider(color: Colors.white24, height: 24),
+              Text("DESKRIPSI:", style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 12)),
+              const SizedBox(height: 4),
+              Text(data['deskripsi'] ?? '-', style: GoogleFonts.shareTechMono(fontSize: 16)),
+              
+              // Lampiran Umum
+              if (data['lampiran'] != null)
+                _AttachmentBtn(path: data['lampiran']),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+
+        // 5. DATA SPESIFIK LAYANAN (YANG DI-HIGHLIGHT MERAH)
+        // Logika ini hanya jalan jika Backend mengirim 'detail'
+        if (detailLayanan != null)
+          _HevCard(
+            title: "ENCRYPTED DATA BLOCK",
+            borderColor: hlGreen,
+            child: _buildDynamicSpecificData(layananNama, detailLayanan),
+          )
+        else 
+          // Debugging jika data detail null
+          Container(
+            padding: const EdgeInsets.all(10), 
+            decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
+            child: const Text("NO SPECIFIC DATA RECEIVED FROM SERVER", style: TextStyle(color: Colors.grey)),
+          ),
+
+        const SizedBox(height: 16),
+
+        // 6. RIWAYAT (TIMELINE)
+        _HevCard(
+          title: "EVENT LOG",
+          child: _buildTimeline(riwayat),
+        ),
+        const SizedBox(height: 16),
+
+        // 7. KOMENTAR
+        _HevCard(
+          title: "COMM CHANNEL",
+          child: _buildComments(data['komentar']),
+        ),
+        const SizedBox(height: 40),
       ],
     );
   }
 
-  // Helper untuk baris detail
-  Widget _buildDetailRow(
-    String title,
-    String? value,
-    IconData icon, {
-    bool isMultiline = false,
-  }) {
+  // === LOGIKA TAMPILAN DATA SPESIFIK (PERSIS BLADE) ===
+  Widget _buildDynamicSpecificData(String namaLayanan, Map<String, dynamic> detail) {
+    List<Widget> widgets = [];
+    String lower = namaLayanan.toLowerCase();
+
+    // 1. Surat Keterangan Aktif
+    if (lower.contains('surat keterangan aktif')) {
+      widgets.add(_InfoRow("Keperluan", detail['keperluan']));
+      widgets.add(_InfoRow("Thn Ajaran", detail['tahun_ajaran']));
+      widgets.add(_InfoRow("Semester", detail['semester']));
+      if (detail['keperluan_lainnya'] != null) {
+        widgets.add(_InfoRow("Lainnya", detail['keperluan_lainnya']));
+      }
+    } 
+    // 2. Reset Akun
+    else if (lower.contains('reset akun')) {
+      widgets.add(_InfoRow("Aplikasi", detail['aplikasi']));
+      widgets.add(_InfoRow("Masalah", detail['deskripsi']));
+    }
+    // 3. Ubah Data Mahasiswa
+    else if (lower.contains('ubah data')) {
+      widgets.add(_InfoRow("Nama Baru", detail['data_nama_lengkap']));
+      widgets.add(_InfoRow("Tmp Lahir", detail['data_tmp_lahir']));
+      widgets.add(_InfoRow("Tgl Lahir", detail['data_tgl_lhr']));
+    }
+    // 4. Request Publikasi (GAMBAR ADA DISINI)
+    else if (lower.contains('publikasi')) {
+      widgets.add(_InfoRow("Topik", detail['judul']));
+      widgets.add(_InfoRow("Kategori", detail['kategori']));
+      widgets.add(const SizedBox(height: 8));
+      widgets.add(Text("CONTENT:", style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 12)));
+      widgets.add(Text(detail['konten'] ?? '-', style: GoogleFonts.shareTechMono(fontSize: 14)));
+      
+      // === LOGIKA GAMBAR ===
+      if (detail['gambar'] != null) {
+        // Pastikan URL lengkap
+        String imgUrl = detail['gambar'].startsWith('http') 
+            ? detail['gambar'] 
+            : "$storageBaseUrl${detail['gambar']}";
+            
+        widgets.add(const SizedBox(height: 16));
+        widgets.add(Container(
+          width: double.infinity,
+          decoration: BoxDecoration(border: Border.all(color: hlGreen)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+               Container(
+                 color: hlGreen.withOpacity(0.2),
+                 width: double.infinity,
+                 padding: const EdgeInsets.all(4),
+                 child: Text("VISUAL DATA ATTACHMENT", style: GoogleFonts.shareTechMono(color: hlGreen, fontSize: 10)),
+               ),
+               Image.network(
+                 imgUrl,
+                 fit: BoxFit.contain,
+                 errorBuilder: (ctx, err, stack) {
+                   log("Gagal load gambar: $imgUrl ($err)");
+                   return Container(
+                     padding: const EdgeInsets.all(20),
+                     alignment: Alignment.center,
+                     child: Text("IMAGE LOAD ERROR\n$imgUrl", textAlign: TextAlign.center, style: const TextStyle(color: hlRed)),
+                   );
+                 },
+                 loadingBuilder: (ctx, child, progress) {
+                   if (progress == null) return child;
+                   return const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: hlGreen)));
+                 },
+               ),
+            ],
+          ),
+        ));
+      }
+    } 
+    // Fallback Default
+    else {
+      detail.forEach((k, v) {
+        if (v is String && !['id','tiket_id','created_at','updated_at'].contains(k)) {
+          widgets.add(_InfoRow(k.toUpperCase(), v));
+        }
+      });
+    }
+    
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: widgets);
+  }
+
+  Widget _buildTimeline(List<dynamic> logs) {
+    return Column(
+      children: logs.map((log) {
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_formatDate(log['created_at'], timeOnly: true), style: GoogleFonts.shareTechMono(color: hlOrange)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(log['status'].toString().replaceAll('_', ' ').toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    Text("User: ${log['user']?['name'] ?? 'SYSTEM'}", style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                  ],
+                ),
+              )
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildComments(List<dynamic>? comments) {
+    return Column(
+      children: [
+        Row(children: [
+          Expanded(child: TextField(controller: _commentController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "TRANSMIT MESSAGE..."))),
+          const SizedBox(width: 8),
+          IconButton(onPressed: sendingComment ? null : postComment, icon: const Icon(Icons.send, color: hlOrange), style: IconButton.styleFrom(backgroundColor: Colors.black, side: const BorderSide(color: hlOrange)))
+        ]),
+        const SizedBox(height: 16),
+        if (comments == null || comments.isEmpty) const Text("NO TRANSMISSIONS RECORDED", style: TextStyle(color: Colors.grey)),
+        if (comments != null) ...comments.map((c) {
+           final isMe = c['pengirim']?['role'] == 'mahasiswa';
+           return Container(
+             margin: const EdgeInsets.only(bottom: 8),
+             padding: const EdgeInsets.all(8),
+             decoration: BoxDecoration(
+               color: isMe ? hlOrange.withOpacity(0.1) : hlGreen.withOpacity(0.1),
+               border: Border(left: BorderSide(color: isMe ? hlOrange : hlGreen, width: 3)),
+             ),
+             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+               Text(c['pengirim']?['name'] ?? 'UNKNOWN', style: TextStyle(fontWeight: FontWeight.bold, color: isMe ? hlOrange : hlGreen)),
+               const SizedBox(height: 4),
+               Text(c['komentar'] ?? '', style: const TextStyle(color: Colors.white)),
+             ]),
+           );
+        })
+      ],
+    );
+  }
+
+  String _formatDate(String? d, {bool timeOnly = false}) {
+    if (d == null) return '-';
+    try {
+      final dt = DateTime.parse(d);
+      if (timeOnly) return DateFormat('HH:mm').format(dt);
+      return DateFormat('dd/MM/yyyy HH:mm').format(dt);
+    } catch (e) { return d; }
+  }
+}
+
+// === WIDGET HELPERS ===
+
+class _HevCard extends StatelessWidget {
+  final String title;
+  final Widget child;
+  final Color borderColor;
+  const _HevCard({required this.title, required this.child, this.borderColor = hlOrange});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFF222222),
+        border: Border.all(color: borderColor, width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            color: borderColor.withOpacity(0.2),
+            child: Text(title, style: GoogleFonts.orbitron(fontSize: 12, fontWeight: FontWeight.bold, color: borderColor, letterSpacing: 1.5)),
+          ),
+          Padding(padding: const EdgeInsets.all(16), child: child),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String? value;
+  const _InfoRow(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: Colors.deepPurple.shade300),
-          const SizedBox(width: 10),
-          Expanded(
-            flex: 2,
-            child: Text(
-              "$title:",
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
-              ),
-            ),
-          ),
-          Expanded(
-            flex: 4,
-            child: Text(
-              value ?? 'N/A',
-              style: const TextStyle(color: Colors.black54),
-              maxLines: isMultiline ? null : 3,
-              overflow: isMultiline ? TextOverflow.clip : TextOverflow.ellipsis,
-            ),
-          ),
+          SizedBox(width: 110, child: Text(label, style: GoogleFonts.shareTechMono(color: Colors.grey))),
+          Expanded(child: Text(value ?? '-', style: GoogleFonts.shareTechMono(color: Colors.white, fontWeight: FontWeight.bold))),
         ],
       ),
     );
   }
+}
 
-  // 🚫 Widget Error
-  Widget _buildErrorWidget(String message) {
-    return Center(
+class _StatusBadge extends StatelessWidget {
+  final String status;
+  const _StatusBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    Color c = Colors.grey;
+    if (status.contains('Selesai')) c = hlGreen;
+    if (status.contains('Tolak') || status.contains('Masalah')) c = hlRed;
+    if (status.contains('Proses') || status.contains('Tangani')) c = hlOrange;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(border: Border.all(color: c)),
+      child: Text(status.replaceAll('_', ' ').toUpperCase(), style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 10)),
+    );
+  }
+}
+
+class _AttachmentBtn extends StatelessWidget {
+  final String path;
+  const _AttachmentBtn({required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    String fullUrl = path.startsWith('http') ? path : "$storageBaseUrl$path";
+    return GestureDetector(
+      onTap: () { log("Open: $fullUrl"); },
       child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.red.shade50,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.red.shade300),
-        ),
-        child: Column(
-          children: [
-            const Icon(
-              Icons.warning_amber_rounded,
-              size: 60,
-              color: Colors.red,
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'Pencarian Gagal:',
-              style: TextStyle(
-                color: Colors.red.shade800,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-            const SizedBox(height: 5),
-            Text(
-              message.replaceAll('**', ''),
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.red),
-            ),
-          ],
-        ),
+        margin: const EdgeInsets.only(top: 8),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(border: Border.all(color: hlOrange)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.folder_open, color: hlOrange, size: 16),
+          const SizedBox(width: 8),
+          Text("ACCESS ATTACHMENT", style: GoogleFonts.shareTechMono(color: hlOrange)),
+        ]),
       ),
     );
   }
+}
 
-  // ⏳ Widget Placeholder
-  Widget _buildLoadingPlaceholder() {
-    return Center(
-      child: Column(
-        children: [
-          CircularProgressIndicator(color: Colors.deepPurple.shade400),
-          const SizedBox(height: 15),
-          const Text("Mencari data tiket, mohon tunggu..."),
-        ],
-      ),
-    );
+class CountdownTimer extends StatefulWidget {
+  final String deadlineStr;
+  const CountdownTimer({super.key, required this.deadlineStr});
+  @override
+  State<CountdownTimer> createState() => _CountdownTimerState();
+}
+
+class _CountdownTimerState extends State<CountdownTimer> {
+  late Timer _t;
+  Duration _d = Duration.zero;
+  @override
+  void initState() { super.initState(); _t = Timer.periodic(const Duration(seconds: 1), (_) => _tick()); }
+  void _tick() { 
+    if(mounted) setState(() => _d = DateTime.parse(widget.deadlineStr).difference(DateTime.now())); 
   }
-
-  // Helper untuk format tanggal saja
-  String _formatDate(String? dateTimeString) {
-    if (dateTimeString == null) return 'N/A';
-    try {
-      final dateTime = DateTime.parse(dateTimeString).toLocal();
-      return DateFormat(
-        'dd MMMM yyyy',
-        'id_ID',
-      ).format(dateTime); // Menggunakan locale Indonesia
-    } catch (e) {
-      return dateTimeString.split(' ')[0];
-    }
-  }
-
-  // Helper untuk format tanggal dan waktu
-  String _formatDateTime(String? dateTimeString) {
-    if (dateTimeString == null) return 'N/A';
-    try {
-      final dateTime = DateTime.parse(dateTimeString).toLocal();
-      // Menggunakan locale Indonesia dan format 24 jam
-      return DateFormat('dd/MM/yyyy HH:mm', 'id_ID').format(dateTime);
-    } catch (e) {
-      return dateTimeString;
-    }
+  @override
+  void dispose() { _t.cancel(); super.dispose(); }
+  @override
+  Widget build(BuildContext context) {
+    return Text("${_d.inHours}:${_d.inMinutes % 60}:${_d.inSeconds % 60}", style: GoogleFonts.orbitron(fontSize: 32, color: hlRed, fontWeight: FontWeight.bold));
   }
 }
