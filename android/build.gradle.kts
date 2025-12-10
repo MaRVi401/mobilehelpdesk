@@ -4,7 +4,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        // Tambahkan baris ini (sesuaikan versi jika perlu, 4.4.2 cukup stabil)
+        classpath("com.android.tools.build:gradle:...")
         classpath("com.google.gms:google-services:4.4.2")
     }
 }
