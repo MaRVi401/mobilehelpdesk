@@ -5,19 +5,25 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+// === THEME COLORS ===
 const Color hlOrange = Color(0xFFFF9D00); 
 const Color hlBg = Color(0xFF1C1C1C);     
 const Color hlPanel = Color(0xFF2B2B2B);  
 const Color hlGreen = Color(0xFF62B236);  
 const Color hlRed = Color(0xFFD92424);    
 
-// KONFIGURASI SERVER (Ganti dengan IP Laptop Anda)
+// === CONFIG ===
 const String apiBaseUrl = "http://10.0.2.2:8000/api"; 
 const String storageBaseUrl = "http://10.0.2.2:8000/storage/";
 const String apiKey = "dalit123";
 
-void main() {
+void main() async{
+  WidgetsFlutterBinding.ensureInitialized();
+  await SharedPreferences.getInstance();
+  
   runApp(const MyApp());
 }
 
@@ -55,573 +61,641 @@ class MyApp extends StatelessWidget {
           hintStyle: TextStyle(color: hlOrange.withOpacity(0.5)),
         ),
       ),
-      home: const CariTiketPage(),
+      home: const AuthCheck(),
     );
   }
 }
 
-class CariTiketPage extends StatefulWidget {
-  const CariTiketPage({super.key});
-
+// === 1. AUTH CHECKER ===
+class AuthCheck extends StatefulWidget {
+  const AuthCheck({super.key});
   @override
-  State<CariTiketPage> createState() => _CariTiketPageState();
+  State<AuthCheck> createState() => _AuthCheckState();
 }
 
-class _CariTiketPageState extends State<CariTiketPage> {
-  final TextEditingController _controller = TextEditingController();
-  final TextEditingController _commentController = TextEditingController();
-  
-  Map<String, dynamic>? tiketData;
-  String? deadlineTimer;
-  bool loading = false;
-  bool sendingComment = false;
-  String? errorMessage;
+class _AuthCheckState extends State<AuthCheck> {
+  @override
+  void initState() { super.initState(); _checkLogin(); }
 
-  // --- FUNGSI API ---
-
-  Future<void> fetchTiket(String input) async {
-    if (input.trim().isEmpty) return _setError("INPUT SUBJECT ID");
-
-    setState(() { loading = true; errorMessage = null; tiketData = null; });
-
-    try {
-      final url = Uri.parse("$apiBaseUrl/tiket/${Uri.encodeComponent(input.trim())}");
-      log("Connecting to: $url");
-
-      final response = await http.get(url, headers: {'Accept': 'application/json', 'API_KEY_MAHASISWA': apiKey});
-
-      log("Response Body: ${response.body}"); // Cek Log untuk memastikan data 'detail' ada
-
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data['success'] == true && data['data'] != null) {
-          setState(() {
-            tiketData = data['data'];
-            deadlineTimer = data['deadline_timer'];
-          });
-        } else {
-          _setError(data['message'] ?? "SUBJECT NOT FOUND");
-        }
-      } else {
-        _setError("CONNECTION ERROR (${response.statusCode})");
-      }
-    } catch (e) {
-      _setError("NETWORK FAILURE: $e");
-    } finally {
-      setState(() { loading = false; });
+  Future<void> _checkLogin() async {
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('auth_token');
+    if (mounted) {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => 
+        token != null ? const MainScreen() : const LoginPage()
+      ));
     }
   }
+  @override
+  Widget build(BuildContext context) => const Scaffold(body: Center(child: CircularProgressIndicator(color: hlOrange)));
+}
 
-  Future<void> postComment() async {
-    if (_commentController.text.trim().isEmpty) return;
-    setState(() { sendingComment = true; });
+// === 2. LOGIN PAGE (FUTURISTIC STYLE) ===
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
 
+class _LoginPageState extends State<LoginPage> {
+  final _emailCtrl = TextEditingController();
+  final _passCtrl = TextEditingController();
+  bool _isLoading = false;
+  bool _isObscure = true; // Untuk icon mata
+  final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
+
+  Future<void> _login(bool isGoogle) async {
+    setState(() => _isLoading = true);
     try {
-      final id = tiketData!['id'];
-      final url = Uri.parse("$apiBaseUrl/tiket/$id/komentar");
-      
-      final response = await http.post(
-        url,
-        headers: {'Accept': 'application/json', 'API_KEY_MAHASISWA': apiKey},
-        body: {'komentar': _commentController.text}
+      String endpoint = isGoogle ? '/auth/google-mobile' : '/auth/login';
+      Map<String, dynamic> body = {};
+
+      if (isGoogle) {
+        final gUser = await _googleSignIn.signIn();
+        if (gUser == null) { setState(() => _isLoading = false); return; }
+        // Validasi Domain Kampus
+        if (!gUser.email.endsWith('@student.polindra.ac.id') && !gUser.email.endsWith('@polindra.ac.id')) {
+          await _googleSignIn.signOut();
+          if(mounted) _alert("ACCESS DENIED", "DOMAIN INVALID. USE @student.polindra.ac.id");
+          setState(() => _isLoading = false);
+          return;
+        }
+        body = {
+          'email': gUser.email,
+          'google_id': gUser.id,
+          'name': gUser.displayName ?? 'AGENT',
+          'avatar': gUser.photoUrl ?? ''
+        };
+      } else {
+        if (_emailCtrl.text.isEmpty || _passCtrl.text.isEmpty) {
+          _alert("INPUT ERROR", "CREDENTIALS REQUIRED");
+          setState(() => _isLoading = false);
+          return;
+        }
+        body = {'email': _emailCtrl.text, 'password': _passCtrl.text};
+      }
+
+      final res = await http.post(
+        Uri.parse("$apiBaseUrl$endpoint"),
+        headers: {'Accept': 'application/json'},
+        body: body,
       );
 
-      if (response.statusCode == 200) {
-        _commentController.clear();
-        fetchTiket(tiketData!['no_tiket']); // Refresh data
+      final data = jsonDecode(res.body);
+      if (res.statusCode == 200 && data['success'] == true) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('auth_token', data['token']);
+        await prefs.setString('user_name', data['data']['name']);
+        if(mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const MainScreen()));
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Transmission Failed"), backgroundColor: hlRed));
+        if(isGoogle) await _googleSignIn.signOut();
+        if(mounted) _alert("LOGIN FAILED", data['message'] ?? "UNAUTHORIZED");
       }
     } catch (e) {
-      log("Error: $e");
+      if(mounted) _alert("SYSTEM FAILURE", e.toString());
     } finally {
-      setState(() { sendingComment = false; });
+      if(mounted) setState(() => _isLoading = false);
     }
   }
 
-  void _setError(String msg) {
-    setState(() { errorMessage = msg; });
+  void _alert(String title, String msg) {
+    showDialog(context: context, builder: (ctx) => AlertDialog(
+      backgroundColor: hlPanel,
+      shape: RoundedRectangleBorder(side: const BorderSide(color: hlRed), borderRadius: BorderRadius.circular(4)),
+      title: Text(title, style: GoogleFonts.orbitron(color: hlRed, fontWeight: FontWeight.bold)),
+      content: Text(msg, style: GoogleFonts.shareTechMono(color: Colors.white)),
+      actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("ACKNOWLEDGE", style: TextStyle(color: hlOrange)))]
+    ));
   }
 
-  // --- TAMPILAN UTAMA ---
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.security_outlined, size: 80, color: hlOrange),
+                const SizedBox(height: 20),
+                Text("HELPDESK ACCESS", style: GoogleFonts.orbitron(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
+                const SizedBox(height: 40),
+                
+                // Input Email
+                TextField(
+                  controller: _emailCtrl, 
+                  style: GoogleFonts.shareTechMono(color: hlOrange), 
+                  decoration: const InputDecoration(labelText: "IDENTITY (EMAIL)", prefixIcon: Icon(Icons.person, color: hlOrange))
+                ),
+                const SizedBox(height: 16),
+                
+                // Input Password dengan Icon Mata
+                TextField(
+                  controller: _passCtrl, 
+                  obscureText: _isObscure, 
+                  style: GoogleFonts.shareTechMono(color: hlOrange), 
+                  decoration: InputDecoration(
+                    labelText: "PASSCODE", 
+                    prefixIcon: const Icon(Icons.lock, color: hlOrange),
+                    suffixIcon: IconButton(
+                      icon: Icon(_isObscure ? Icons.visibility_off : Icons.visibility, color: hlOrange),
+                      onPressed: () => setState(() => _isObscure = !_isObscure),
+                    )
+                  )
+                ),
+                
+                const SizedBox(height: 24),
+                
+                if (_isLoading) 
+                  const CircularProgressIndicator(color: hlOrange) 
+                else Column(
+                  children: [
+                    SizedBox(width: double.infinity, child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: hlOrange, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+                      onPressed: () => _login(false),
+                      child: Text("INITIATE LOGIN", style: GoogleFonts.orbitron(fontWeight: FontWeight.bold)),
+                    )),
+                    const SizedBox(height: 16),
+                    SizedBox(width: double.infinity, child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white54), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+                      onPressed: () => _login(true),
+                      icon: const Icon(Icons.g_mobiledata, color: Colors.white),
+                      label: Text("GOOGLE SSO", style: GoogleFonts.shareTechMono(color: Colors.white)),
+                    )),
+                  ],
+                )
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// === 3. MAIN SCREEN (TABS) ===
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  int _index = 0;
+  final List<Widget> _pages = [
+    const MyTicketListPage(), // Fitur Baru
+    const SearchTicketPage(), // Fitur Lama
+  ];
+
+  void _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    await GoogleSignIn().signOut();
+    if(mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LoginPage()));
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("HELPDESK // POLINDRA", style: GoogleFonts.orbitron(letterSpacing: 2, color: hlOrange, fontSize: 20)),
+        title: Text("SERVICEDESK // POLINDRA", style: GoogleFonts.orbitron(letterSpacing: 2, color: hlOrange, fontSize: 18)),
         backgroundColor: Colors.black,
-        bottom: PreferredSize(preferredSize: const Size.fromHeight(2), child: Container(color: hlOrange, height: 2)),
         centerTitle: true,
+        bottom: PreferredSize(preferredSize: const Size.fromHeight(2), child: Container(color: hlOrange, height: 2)),
+        actions: [IconButton(onPressed: _logout, icon: const Icon(Icons.power_settings_new, color: hlRed))],
       ),
-      body: Column(
-        children: [
-          _buildSearchBar(),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: _buildContent(),
-            ),
-          ),
+      body: _pages[_index],
+      bottomNavigationBar: BottomNavigationBar(
+        backgroundColor: const Color(0xFF111111),
+        selectedItemColor: hlOrange,
+        unselectedItemColor: Colors.grey,
+        currentIndex: _index,
+        selectedLabelStyle: GoogleFonts.orbitron(fontSize: 10),
+        unselectedLabelStyle: GoogleFonts.orbitron(fontSize: 10),
+        onTap: (i) => setState(() => _index = i),
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.list_alt), label: "MY TICKETS"),
+          BottomNavigationBarItem(icon: Icon(Icons.qr_code_scanner), label: "SEARCH"),
         ],
       ),
     );
   }
+}
 
-  Widget _buildSearchBar() {
-    return Container(
-      color: const Color(0xFF111111),
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _controller,
-              style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 18),
-              decoration: const InputDecoration(
-                labelText: "ENTER TICKET ID",
-                prefixIcon: Icon(Icons.qr_code_scanner, color: hlOrange),
+// === 4. FITUR BARU: LIST TIKET SAYA ===
+class MyTicketListPage extends StatefulWidget {
+  const MyTicketListPage({super.key});
+  @override
+  State<MyTicketListPage> createState() => _MyTicketListPageState();
+}
+
+class _MyTicketListPageState extends State<MyTicketListPage> {
+  List<dynamic> tickets = [];
+  bool loading = true;
+  String? error;
+
+  @override
+  void initState() { super.initState(); _loadTickets(); }
+
+  Future<void> _loadTickets() async {
+    setState(() { loading = true; error = null; });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth_token');
+      
+      // Request ke endpoint baru: /api/tiket/my-tickets
+      final res = await http.get(
+        Uri.parse("$apiBaseUrl/tiket/my-tickets"),
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': 'Bearer $token',
+          'API_KEY_MAHASISWA': apiKey
+        }
+      );
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data['success'] == true) {
+          setState(() => tickets = data['data']);
+        } else {
+          setState(() => error = data['message']);
+        }
+      } else {
+        setState(() => error = "SERVER ERROR: ${res.statusCode}");
+      }
+    } catch (e) {
+      setState(() => error = "CONNECTION FAILED");
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  // --- Fungsi Format Status ---
+  String _cleanStatus(String rawStatus) {
+    return rawStatus.replaceAll('_', ' ').toUpperCase();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (loading) return const Center(child: CircularProgressIndicator(color: hlOrange));
+    if (error != null) return Center(child: Text(error!, style: GoogleFonts.shareTechMono(color: hlRed)));
+    if (tickets.isEmpty) return Center(child: Text("NO DATA FOUND", style: GoogleFonts.orbitron(color: Colors.grey)));
+
+    return RefreshIndicator(
+      color: hlOrange,
+      backgroundColor: hlPanel,
+      onRefresh: _loadTickets,
+      child: ListView.separated(
+        padding: const EdgeInsets.all(16),
+        itemCount: tickets.length,
+        separatorBuilder: (_,__) => const SizedBox(height: 12),
+        itemBuilder: (ctx, i) {
+          final t = tickets[i];
+          final riwayat = (t['riwayat_status'] as List?) ?? [];
+          
+          // --- Logic Status ---
+          String currentStatus = t['status'] ?? 'PENDING';
+          if (riwayat.isNotEmpty) {
+            // Ambil status terbaru dari riwayat (biasanya index 0 karena desc)
+            currentStatus = riwayat[0]['status'];
+          }
+          
+          // --- Logic Unit (Fix Unit get) ---
+          final unitName = t['unit']?['nama_unit'] 
+                         ?? t['layanan']?['unit']?['nama_unit'] 
+                         ?? 'UNIT N/A';
+
+          return InkWell(
+            onTap: () {
+               Navigator.push(context, MaterialPageRoute(builder: (_) => TicketDetailPage(ticketId: t['no_tiket'])));
+            },
+            child: _HevCard(
+              title: "${t['no_tiket']}",
+              borderColor: _getStatusColor(currentStatus),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                       Expanded(child: Text(t['layanan']?['nama'] ?? 'UNKNOWN SERVICE', style: GoogleFonts.shareTechMono(color: Colors.white, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                       _StatusBadge(status: _cleanStatus(currentStatus)), // Bersihkan status
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(unitName, style: GoogleFonts.shareTechMono(color: Colors.grey, fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Text(
+                      DateFormat('dd MMM yy HH:mm').format(DateTime.parse(t['created_at'])),
+                      style: GoogleFonts.shareTechMono(fontSize: 10, color: hlOrange),
+                    ),
+                  )
+                ],
               ),
-              onSubmitted: (val) => fetchTiket(val),
             ),
-          ),
-          const SizedBox(width: 12),
-          InkWell(
-            onTap: () => fetchTiket(_controller.text),
-            child: Container(
-              height: 56, width: 60,
-              decoration: BoxDecoration(
-                color: hlOrange.withOpacity(0.1),
-                border: Border.all(color: hlOrange),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: loading 
-                ? const Center(child: CircularProgressIndicator(color: hlOrange))
-                : const Icon(Icons.search, color: hlOrange, size: 30),
-            ),
-          )
-        ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildContent() {
-    if (errorMessage != null) {
-      return Center(
-        child: Container(
+  Color _getStatusColor(String s) {
+    s = s.toLowerCase();
+    if(s.contains('selesai')) return hlGreen;
+    if(s.contains('masalah') || s.contains('tolak')) return hlRed;
+    return hlOrange;
+  }
+}
+
+// === 5. FITUR LAMA: PENCARIAN (Updated to handle view) ===
+class SearchTicketPage extends StatefulWidget {
+  const SearchTicketPage({super.key});
+  @override
+  State<SearchTicketPage> createState() => _SearchTicketPageState();
+}
+
+class _SearchTicketPageState extends State<SearchTicketPage> {
+  final _ctrl = TextEditingController();
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Container(
+          color: const Color(0xFF111111),
           padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(border: Border.all(color: hlRed), color: hlRed.withOpacity(0.1)),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.warning, color: hlRed, size: 50),
-              const SizedBox(height: 16),
-              Text("WARNING: $errorMessage", style: GoogleFonts.shareTechMono(color: hlRed, fontSize: 18), textAlign: TextAlign.center),
-            ],
-          ),
+          child: Row(children: [
+            Expanded(child: TextField(controller: _ctrl, style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 18), decoration: const InputDecoration(labelText: "ENTER TICKET ID", prefixIcon: Icon(Icons.qr_code_scanner, color: hlOrange)))),
+            const SizedBox(width: 12),
+            InkWell(
+              onTap: () {
+                if(_ctrl.text.isNotEmpty) {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => TicketDetailPage(ticketId: _ctrl.text)));
+                }
+              },
+              child: Container(
+                height: 56, width: 60,
+                decoration: BoxDecoration(color: hlOrange.withOpacity(0.1), border: Border.all(color: hlOrange), borderRadius: BorderRadius.circular(4)),
+                child: const Icon(Icons.search, color: hlOrange, size: 30),
+              ),
+            )
+          ]),
         ),
-      );
-    }
+        Expanded(child: Center(child: Opacity(opacity: 0.3, child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Icon(Icons.radar, size: 100, color: hlOrange),
+          const SizedBox(height: 20),
+          Text("SCANNING FOR TARGET...", style: GoogleFonts.orbitron(color: hlOrange))
+        ])))),
+      ],
+    );
+  }
+}
 
-    if (tiketData == null) {
-      return Center(
-        child: Opacity(
-          opacity: 0.3,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.science_outlined, size: 100, color: hlOrange),
-              const SizedBox(height: 20),
-              Text("AWAITING DATA INPUT...", style: GoogleFonts.orbitron(color: hlOrange, fontSize: 16)),
-            ],
-          ),
-        ),
-      );
-    }
+// === 6. DETAIL TIKET (REUSABLE) ===
+class TicketDetailPage extends StatefulWidget {
+  final String ticketId;
+  const TicketDetailPage({super.key, required this.ticketId});
+  @override
+  State<TicketDetailPage> createState() => _TicketDetailPageState();
+}
 
-    return _buildTicketDetails(tiketData!);
+class _TicketDetailPageState extends State<TicketDetailPage> {
+  Map<String, dynamic>? tiketData;
+  String? deadlineTimer;
+  bool loading = true;
+  String? error;
+  final _commentController = TextEditingController();
+  bool sending = false;
+
+  @override
+  void initState() { super.initState(); _fetch(); }
+
+  Future<void> _fetch() async {
+    setState(() { loading = true; error = null; });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth_token');
+      
+      final url = Uri.parse("$apiBaseUrl/tiket/${Uri.encodeComponent(widget.ticketId)}");
+      final res = await http.get(url, headers: {
+        'Accept': 'application/json',
+        'Authorization': 'Bearer $token',
+        'API_KEY_MAHASISWA': apiKey
+      });
+
+      if (res.statusCode == 200) {
+        final d = jsonDecode(res.body);
+        if (d['success'] == true) {
+          setState(() { tiketData = d['data']; deadlineTimer = d['deadline_timer']; });
+        } else {
+          setState(() => error = d['message']);
+        }
+      } else {
+        setState(() => error = "ERR: ${res.statusCode}");
+      }
+    } catch (e) {
+      setState(() => error = "NET FAIL");
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
   }
 
-  Widget _buildTicketDetails(Map<String, dynamic> data) {
-    // DATA UTAMA
+  Future<void> _postComment() async {
+    if (_commentController.text.trim().isEmpty) return;
+    setState(() => sending = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('auth_token');
+      final url = Uri.parse("$apiBaseUrl/tiket/${tiketData!['id']}/komentar");
+      final res = await http.post(url, headers: {
+        'Accept': 'application/json',
+        'Authorization': 'Bearer $token',
+        'API_KEY_MAHASISWA': apiKey
+      }, body: {'komentar': _commentController.text});
+
+      if (res.statusCode == 200) {
+        _commentController.clear();
+        _fetch();
+      }
+    } catch(e) { log("Err: $e"); }
+    finally { if (mounted) setState(() => sending = false); }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("TARGET: ${widget.ticketId}", style: GoogleFonts.orbitron(color: hlOrange)),
+        backgroundColor: Colors.black,
+        iconTheme: const IconThemeData(color: hlOrange),
+      ),
+      body: loading ? const Center(child: CircularProgressIndicator(color: hlOrange)) :
+            error != null ? Center(child: Text(error!, style: GoogleFonts.shareTechMono(color: hlRed))) :
+            SingleChildScrollView(padding: const EdgeInsets.all(16), child: _buildContent(tiketData!)),
+    );
+  }
+
+  Widget _buildContent(Map<String, dynamic> data) {
     final pemohon = data['pemohon'] ?? {};
     final mahasiswa = data['mahasiswa'] ?? pemohon['mahasiswa'] ?? {};
     final prodi = mahasiswa['program_studi'] ?? {};
     final jurusan = prodi['jurusan'] ?? {};
     final layananNama = data['layanan']?['nama'] ?? 'UNKNOWN';
-    final unit = data['layanan']?['unit'] ?? data['unit'] ?? {}; // Unit dari relasi layanan
-    final detailLayanan = data['detail']; // INI PENTING (Data Spesifik)
-
-    // STATUS
+    // FIX Unit Logic di Detail Page juga
+    final unit = data['unit']?['nama_unit'] 
+              ?? data['layanan']?['unit']?['nama_unit'] 
+              ?? 'N/A';
+              
+    final detailLayanan = data['detail'];
     final riwayat = (data['riwayat_status'] as List?) ?? [];
+    
+    // Status Logic
     String status = data['status'] ?? 'PENDING';
     if (riwayat.isNotEmpty) status = riwayat[0]['status'];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 1. HEADER STATUS
-        _HevCard(
-          title: "SYSTEM STATUS",
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text("#${data['no_tiket']}", style: GoogleFonts.orbitron(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
-              _StatusBadge(status: status),
-            ],
-          ),
-        ),
+        _HevCard(title: "SYSTEM STATUS", child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text("#${data['no_tiket']}", style: GoogleFonts.orbitron(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
+          _StatusBadge(status: status.replaceAll('_', ' ').toUpperCase()), // Format Status
+        ])),
         const SizedBox(height: 16),
 
-        // 2. TIMER (JIKA ADA)
         if (status == 'Diselesaikan_oleh_PIC' && deadlineTimer != null)
-           _HevCard(
-             title: "CRITICAL TIMER",
-             borderColor: hlRed,
-             child: Column(
-               children: [
-                 Text("AUTO-CLOSE SEQUENCE INITIATED", style: GoogleFonts.shareTechMono(color: hlRed)),
-                 const SizedBox(height: 8),
-                 CountdownTimer(deadlineStr: deadlineTimer!),
-               ],
-             ),
-           ),
+           _HevCard(title: "CRITICAL TIMER", borderColor: hlRed, child: Column(children: [
+             Text("AUTO-CLOSE SEQUENCE INITIATED", style: GoogleFonts.shareTechMono(color: hlRed)),
+             const SizedBox(height: 8),
+             CountdownTimer(deadlineStr: deadlineTimer!),
+           ])),
         if (status == 'Diselesaikan_oleh_PIC' && deadlineTimer != null) const SizedBox(height: 16),
 
-        // 3. INFO PEMOHON
-        _HevCard(
-          title: "PERSONNEL DATA",
-          child: Column(
-            children: [
-              _InfoRow("NAMA", pemohon['name'] ?? mahasiswa['nama'] ?? 'N/A'),
-              _InfoRow("ID (NIM)", mahasiswa['nim'] ?? 'N/A'),
-              _InfoRow("JURUSAN", jurusan['nama_jurusan'] ?? 'N/A'),
-              _InfoRow("PRODI", prodi['program_studi'] ?? 'N/A'),
-            ],
-          ),
-        ),
+        _HevCard(title: "PERSONNEL DATA", child: Column(children: [
+          _InfoRow("NAMA", pemohon['name'] ?? mahasiswa['nama'] ?? 'N/A'),
+          _InfoRow("ID (NIM)", mahasiswa['nim'] ?? 'N/A'),
+          _InfoRow("JURUSAN", jurusan['nama_jurusan'] ?? 'N/A'),
+          _InfoRow("PRODI", prodi['program_studi'] ?? 'N/A'),
+        ])),
         const SizedBox(height: 16),
 
-        // 4. DETAIL TIKET UMUM
-        _HevCard(
-          title: "REQUEST PARAMETERS",
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _InfoRow("LAYANAN", layananNama),
-              _InfoRow("UNIT", unit['nama_unit'] ?? 'N/A'), // Unit muncul disini
-              const Divider(color: Colors.white24, height: 24),
-              Text("DESKRIPSI:", style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 12)),
-              const SizedBox(height: 4),
-              Text(data['deskripsi'] ?? '-', style: GoogleFonts.shareTechMono(fontSize: 16)),
-              
-              // Lampiran Umum
-              if (data['lampiran'] != null)
-                _AttachmentBtn(path: data['lampiran']),
-            ],
-          ),
-        ),
+        _HevCard(title: "REQUEST PARAMETERS", child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _InfoRow("LAYANAN", layananNama),
+          _InfoRow("UNIT", unit), // Unit sudah diperbaiki
+          const Divider(color: Colors.white24, height: 24),
+          Text("DESKRIPSI:", style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 12)),
+          const SizedBox(height: 4),
+          Text(data['deskripsi'] ?? '-', style: GoogleFonts.shareTechMono(fontSize: 16)),
+          if (data['lampiran'] != null) _AttachmentBtn(path: data['lampiran']),
+        ])),
         const SizedBox(height: 16),
 
-        // 5. DATA SPESIFIK LAYANAN (YANG DI-HIGHLIGHT MERAH)
-        // Logika ini hanya jalan jika Backend mengirim 'detail'
-        if (detailLayanan != null)
-          _HevCard(
-            title: "ENCRYPTED DATA BLOCK",
-            borderColor: hlGreen,
-            child: _buildDynamicSpecificData(layananNama, detailLayanan),
-          )
-        else 
-          // Debugging jika data detail null
-          Container(
-            padding: const EdgeInsets.all(10), 
-            decoration: BoxDecoration(border: Border.all(color: Colors.grey)),
-            child: const Text("NO SPECIFIC DATA RECEIVED FROM SERVER", style: TextStyle(color: Colors.grey)),
-          ),
+        if (detailLayanan != null) _HevCard(title: "ENCRYPTED DATA BLOCK", borderColor: hlGreen, child: _buildDynamicSpecificData(layananNama, detailLayanan)),
+        if (detailLayanan != null) const SizedBox(height: 16),
 
+        _HevCard(title: "EVENT LOG", child: Column(children: riwayat.map((l) => Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(_formatDate(l['created_at'], timeOnly: true), style: GoogleFonts.shareTechMono(color: hlOrange)),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(l['status'].toString().replaceAll('_', ' ').toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            Text("User: ${l['user']?['name'] ?? 'SYSTEM'}", style: const TextStyle(color: Colors.grey, fontSize: 12)),
+          ]))
+        ]))).toList())),
         const SizedBox(height: 16),
 
-        // 6. RIWAYAT (TIMELINE)
-        _HevCard(
-          title: "EVENT LOG",
-          child: _buildTimeline(riwayat),
-        ),
-        const SizedBox(height: 16),
-
-        // 7. KOMENTAR
-        _HevCard(
-          title: "COMM CHANNEL",
-          child: _buildComments(data['komentar']),
-        ),
-        const SizedBox(height: 40),
-      ],
-    );
-  }
-
-  // === LOGIKA TAMPILAN DATA SPESIFIK (PERSIS BLADE) ===
-  Widget _buildDynamicSpecificData(String namaLayanan, Map<String, dynamic> detail) {
-    List<Widget> widgets = [];
-    String lower = namaLayanan.toLowerCase();
-
-    // 1. Surat Keterangan Aktif
-    if (lower.contains('surat keterangan aktif')) {
-      widgets.add(_InfoRow("Keperluan", detail['keperluan']));
-      widgets.add(_InfoRow("Thn Ajaran", detail['tahun_ajaran']));
-      widgets.add(_InfoRow("Semester", detail['semester']));
-      if (detail['keperluan_lainnya'] != null) {
-        widgets.add(_InfoRow("Lainnya", detail['keperluan_lainnya']));
-      }
-    } 
-    // 2. Reset Akun
-    else if (lower.contains('reset akun')) {
-      widgets.add(_InfoRow("Aplikasi", detail['aplikasi']));
-      widgets.add(_InfoRow("Masalah", detail['deskripsi']));
-    }
-    // 3. Ubah Data Mahasiswa
-    else if (lower.contains('ubah data')) {
-      widgets.add(_InfoRow("Nama Baru", detail['data_nama_lengkap']));
-      widgets.add(_InfoRow("Tmp Lahir", detail['data_tmp_lahir']));
-      widgets.add(_InfoRow("Tgl Lahir", detail['data_tgl_lhr']));
-    }
-    // 4. Request Publikasi (GAMBAR ADA DISINI)
-    else if (lower.contains('publikasi')) {
-      widgets.add(_InfoRow("Topik", detail['judul']));
-      widgets.add(_InfoRow("Kategori", detail['kategori']));
-      widgets.add(const SizedBox(height: 8));
-      widgets.add(Text("CONTENT:", style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 12)));
-      widgets.add(Text(detail['konten'] ?? '-', style: GoogleFonts.shareTechMono(fontSize: 14)));
-      
-      // === LOGIKA GAMBAR ===
-      if (detail['gambar'] != null) {
-        // Pastikan URL lengkap
-        String imgUrl = detail['gambar'].startsWith('http') 
-            ? detail['gambar'] 
-            : "$storageBaseUrl${detail['gambar']}";
-            
-        widgets.add(const SizedBox(height: 16));
-        widgets.add(Container(
-          width: double.infinity,
-          decoration: BoxDecoration(border: Border.all(color: hlGreen)),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-               Container(
-                 color: hlGreen.withOpacity(0.2),
-                 width: double.infinity,
-                 padding: const EdgeInsets.all(4),
-                 child: Text("VISUAL DATA ATTACHMENT", style: GoogleFonts.shareTechMono(color: hlGreen, fontSize: 10)),
-               ),
-               Image.network(
-                 imgUrl,
-                 fit: BoxFit.contain,
-                 errorBuilder: (ctx, err, stack) {
-                   log("Gagal load gambar: $imgUrl ($err)");
-                   return Container(
-                     padding: const EdgeInsets.all(20),
-                     alignment: Alignment.center,
-                     child: Text("IMAGE LOAD ERROR\n$imgUrl", textAlign: TextAlign.center, style: const TextStyle(color: hlRed)),
-                   );
-                 },
-                 loadingBuilder: (ctx, child, progress) {
-                   if (progress == null) return child;
-                   return const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator(color: hlGreen)));
-                 },
-               ),
-            ],
-          ),
-        ));
-      }
-    } 
-    // Fallback Default
-    else {
-      detail.forEach((k, v) {
-        if (v is String && !['id','tiket_id','created_at','updated_at'].contains(k)) {
-          widgets.add(_InfoRow(k.toUpperCase(), v));
-        }
-      });
-    }
-    
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: widgets);
-  }
-
-  Widget _buildTimeline(List<dynamic> logs) {
-    return Column(
-      children: logs.map((log) {
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(_formatDate(log['created_at'], timeOnly: true), style: GoogleFonts.shareTechMono(color: hlOrange)),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(log['status'].toString().replaceAll('_', ' ').toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    Text("User: ${log['user']?['name'] ?? 'SYSTEM'}", style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                  ],
-                ),
-              )
-            ],
-          ),
-        );
-      }).toList(),
-    );
-  }
-
-  Widget _buildComments(List<dynamic>? comments) {
-    return Column(
-      children: [
-        Row(children: [
-          Expanded(child: TextField(controller: _commentController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "TRANSMIT MESSAGE..."))),
-          const SizedBox(width: 8),
-          IconButton(onPressed: sendingComment ? null : postComment, icon: const Icon(Icons.send, color: hlOrange), style: IconButton.styleFrom(backgroundColor: Colors.black, side: const BorderSide(color: hlOrange)))
-        ]),
-        const SizedBox(height: 16),
-        if (comments == null || comments.isEmpty) const Text("NO TRANSMISSIONS RECORDED", style: TextStyle(color: Colors.grey)),
-        if (comments != null) ...comments.map((c) {
-           final isMe = c['pengirim']?['role'] == 'mahasiswa';
-           return Container(
-             margin: const EdgeInsets.only(bottom: 8),
-             padding: const EdgeInsets.all(8),
-             decoration: BoxDecoration(
-               color: isMe ? hlOrange.withOpacity(0.1) : hlGreen.withOpacity(0.1),
-               border: Border(left: BorderSide(color: isMe ? hlOrange : hlGreen, width: 3)),
-             ),
-             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _HevCard(title: "COMM CHANNEL", child: Column(children: [
+          Row(children: [
+            Expanded(child: TextField(controller: _commentController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "TRANSMIT MESSAGE..."))),
+            const SizedBox(width: 8),
+            IconButton(onPressed: sending ? null : _postComment, icon: const Icon(Icons.send, color: hlOrange), style: IconButton.styleFrom(backgroundColor: Colors.black, side: const BorderSide(color: hlOrange)))
+          ]),
+          const SizedBox(height: 16),
+          if ((data['komentar'] as List).isEmpty) const Text("NO TRANSMISSIONS RECORDED", style: TextStyle(color: Colors.grey)),
+          ...(data['komentar'] as List).map((c) {
+             final isMe = c['pengirim']?['role'] == 'mahasiswa';
+             return Container(margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: isMe ? hlOrange.withOpacity(0.1) : hlGreen.withOpacity(0.1), border: Border(left: BorderSide(color: isMe ? hlOrange : hlGreen, width: 3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                Text(c['pengirim']?['name'] ?? 'UNKNOWN', style: TextStyle(fontWeight: FontWeight.bold, color: isMe ? hlOrange : hlGreen)),
                const SizedBox(height: 4),
                Text(c['komentar'] ?? '', style: const TextStyle(color: Colors.white)),
-             ]),
-           );
-        })
+             ]));
+          })
+        ])),
       ],
     );
+  }
+
+  // Reuse logic display (simplified for length)
+  Widget _buildDynamicSpecificData(String namaLayanan, Map<String, dynamic> detail) {
+    List<Widget> widgets = [];
+    String lower = namaLayanan.toLowerCase();
+    if (lower.contains('publikasi')) {
+      widgets.add(_InfoRow("Topik", detail['judul']));
+      widgets.add(_InfoRow("Kategori", detail['kategori']));
+      widgets.add(Text("CONTENT: ${detail['konten'] ?? '-'}", style: GoogleFonts.shareTechMono(fontSize: 14)));
+      if (detail['gambar'] != null) {
+         String imgUrl = detail['gambar'].startsWith('http') ? detail['gambar'] : "$storageBaseUrl${detail['gambar']}";
+         widgets.add(const SizedBox(height: 16));
+         widgets.add(Container(decoration: BoxDecoration(border: Border.all(color: hlGreen)), child: Image.network(imgUrl, fit: BoxFit.contain, errorBuilder: (ctx,e,s)=>const Text("IMAGE ERR", style: TextStyle(color: hlRed)))));
+      }
+    } else {
+      detail.forEach((k, v) { if (v is String && !['id','tiket_id','created_at','updated_at'].contains(k)) widgets.add(_InfoRow(k.toUpperCase().replaceAll('_', ' '), v)); });
+    }
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: widgets);
   }
 
   String _formatDate(String? d, {bool timeOnly = false}) {
     if (d == null) return '-';
-    try {
-      final dt = DateTime.parse(d);
-      if (timeOnly) return DateFormat('HH:mm').format(dt);
-      return DateFormat('dd/MM/yyyy HH:mm').format(dt);
-    } catch (e) { return d; }
+    try { final dt = DateTime.parse(d); return timeOnly ? DateFormat('HH:mm').format(dt) : DateFormat('dd/MM/yy HH:mm').format(dt); } catch (e) { return d; }
   }
 }
 
-// === WIDGET HELPERS ===
-
+// === WIDGET HELPERS (REUSED) ===
 class _HevCard extends StatelessWidget {
-  final String title;
-  final Widget child;
-  final Color borderColor;
+  final String title; final Widget child; final Color borderColor;
   const _HevCard({required this.title, required this.child, this.borderColor = hlOrange});
-
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: const Color(0xFF222222),
-        border: Border.all(color: borderColor, width: 1.5),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            color: borderColor.withOpacity(0.2),
-            child: Text(title, style: GoogleFonts.orbitron(fontSize: 12, fontWeight: FontWeight.bold, color: borderColor, letterSpacing: 1.5)),
-          ),
-          Padding(padding: const EdgeInsets.all(16), child: child),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Container(width: double.infinity, decoration: BoxDecoration(color: const Color(0xFF222222), border: Border.all(color: borderColor, width: 1.5)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Container(width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), color: borderColor.withOpacity(0.2), child: Text(title, style: GoogleFonts.orbitron(fontSize: 12, fontWeight: FontWeight.bold, color: borderColor, letterSpacing: 1.5))), Padding(padding: const EdgeInsets.all(16), child: child)]));
 }
-
 class _InfoRow extends StatelessWidget {
-  final String label;
-  final String? value;
+  final String label; final String? value;
   const _InfoRow(this.label, this.value);
-
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 110, child: Text(label, style: GoogleFonts.shareTechMono(color: Colors.grey))),
-          Expanded(child: Text(value ?? '-', style: GoogleFonts.shareTechMono(color: Colors.white, fontWeight: FontWeight.bold))),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Padding(padding: const EdgeInsets.only(bottom: 8), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [SizedBox(width: 110, child: Text(label, style: GoogleFonts.shareTechMono(color: Colors.grey))), Expanded(child: Text(value ?? '-', style: GoogleFonts.shareTechMono(color: Colors.white, fontWeight: FontWeight.bold)))]));
 }
-
 class _StatusBadge extends StatelessWidget {
   final String status;
   const _StatusBadge({required this.status});
-
   @override
   Widget build(BuildContext context) {
     Color c = Colors.grey;
-    if (status.contains('Selesai')) c = hlGreen;
-    if (status.contains('Tolak') || status.contains('Masalah')) c = hlRed;
-    if (status.contains('Proses') || status.contains('Tangani')) c = hlOrange;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(border: Border.all(color: c)),
-      child: Text(status.replaceAll('_', ' ').toUpperCase(), style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 10)),
-    );
+    String upper = status.toUpperCase();
+    if (upper.contains('SELESAI')) c = hlGreen;
+    if (upper.contains('TOLAK') || upper.contains('MASALAH')) c = hlRed;
+    if (upper.contains('PROSES') || upper.contains('TANGANI')) c = hlOrange;
+    return Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(border: Border.all(color: c)), child: Text(upper, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 10)));
   }
 }
-
 class _AttachmentBtn extends StatelessWidget {
   final String path;
   const _AttachmentBtn({required this.path});
-
   @override
-  Widget build(BuildContext context) {
-    String fullUrl = path.startsWith('http') ? path : "$storageBaseUrl$path";
-    return GestureDetector(
-      onTap: () { log("Open: $fullUrl"); },
-      child: Container(
-        margin: const EdgeInsets.only(top: 8),
-        padding: const EdgeInsets.all(8),
-        decoration: BoxDecoration(border: Border.all(color: hlOrange)),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.folder_open, color: hlOrange, size: 16),
-          const SizedBox(width: 8),
-          Text("ACCESS ATTACHMENT", style: GoogleFonts.shareTechMono(color: hlOrange)),
-        ]),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => GestureDetector(onTap: () { log("Open: $storageBaseUrl$path"); }, child: Container(margin: const EdgeInsets.only(top: 8), padding: const EdgeInsets.all(8), decoration: BoxDecoration(border: Border.all(color: hlOrange)), child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.folder_open, color: hlOrange, size: 16), const SizedBox(width: 8), Text("ACCESS ATTACHMENT", style: GoogleFonts.shareTechMono(color: hlOrange))])));
 }
-
 class CountdownTimer extends StatefulWidget {
   final String deadlineStr;
   const CountdownTimer({super.key, required this.deadlineStr});
   @override
   State<CountdownTimer> createState() => _CountdownTimerState();
 }
-
 class _CountdownTimerState extends State<CountdownTimer> {
-  late Timer _t;
-  Duration _d = Duration.zero;
+  late Timer _t; Duration _d = Duration.zero;
   @override
   void initState() { super.initState(); _t = Timer.periodic(const Duration(seconds: 1), (_) => _tick()); }
-  void _tick() { 
-    if(mounted) setState(() => _d = DateTime.parse(widget.deadlineStr).difference(DateTime.now())); 
-  }
+  void _tick() { if(mounted) setState(() => _d = DateTime.parse(widget.deadlineStr).difference(DateTime.now())); }
   @override
   void dispose() { _t.cancel(); super.dispose(); }
   @override
-  Widget build(BuildContext context) {
-    return Text("${_d.inHours}:${_d.inMinutes % 60}:${_d.inSeconds % 60}", style: GoogleFonts.orbitron(fontSize: 32, color: hlRed, fontWeight: FontWeight.bold));
-  }
+  Widget build(BuildContext context) => Text("${_d.inHours}:${_d.inMinutes % 60}:${_d.inSeconds % 60}", style: GoogleFonts.orbitron(fontSize: 32, color: hlRed, fontWeight: FontWeight.bold));
 }
