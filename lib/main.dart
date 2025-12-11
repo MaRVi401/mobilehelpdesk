@@ -16,6 +16,9 @@ const Color hlGreen = Color(0xFF62B236);
 const Color hlRed = Color(0xFFD92424);    
 
 // === CONFIG ===
+// Ganti IP ini sesuai perangkat:
+// Emulator Android: 10.0.2.2
+// Real Device / iOS: Gunakan IP Laptop (misal: 192.168.1.x)
 const String apiBaseUrl = "http://10.0.2.2:8000/api"; 
 const String storageBaseUrl = "http://10.0.2.2:8000/storage/";
 const String apiKey = "dalit123";
@@ -23,7 +26,6 @@ const String apiKey = "dalit123";
 void main() async{
   WidgetsFlutterBinding.ensureInitialized();
   await SharedPreferences.getInstance();
-  
   runApp(const MyApp());
 }
 
@@ -90,7 +92,7 @@ class _AuthCheckState extends State<AuthCheck> {
   Widget build(BuildContext context) => const Scaffold(body: Center(child: CircularProgressIndicator(color: hlOrange)));
 }
 
-// === 2. LOGIN PAGE (FUTURISTIC STYLE) ===
+// === 2. LOGIN PAGE ===
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
   @override
@@ -101,7 +103,7 @@ class _LoginPageState extends State<LoginPage> {
   final _emailCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
   bool _isLoading = false;
-  bool _isObscure = true; // Untuk icon mata
+  bool _isObscure = true; 
   final GoogleSignIn _googleSignIn = GoogleSignIn(scopes: ['email']);
 
   Future<void> _login(bool isGoogle) async {
@@ -113,13 +115,10 @@ class _LoginPageState extends State<LoginPage> {
       if (isGoogle) {
         final gUser = await _googleSignIn.signIn();
         if (gUser == null) { setState(() => _isLoading = false); return; }
-        // Validasi Domain Kampus
-        if (!gUser.email.endsWith('@student.polindra.ac.id') && !gUser.email.endsWith('@polindra.ac.id')) {
-          await _googleSignIn.signOut();
-          if(mounted) _alert("ACCESS DENIED", "DOMAIN INVALID. USE @student.polindra.ac.id");
-          setState(() => _isLoading = false);
-          return;
-        }
+        
+        // Validasi Domain jika diperlukan
+        // if (!gUser.email.endsWith('@student.polindra.ac.id')) { ... }
+
         body = {
           'email': gUser.email,
           'google_id': gUser.id,
@@ -128,7 +127,7 @@ class _LoginPageState extends State<LoginPage> {
         };
       } else {
         if (_emailCtrl.text.isEmpty || _passCtrl.text.isEmpty) {
-          _alert("INPUT ERROR", "CREDENTIALS REQUIRED");
+          _alert("INPUT ERROR", "Please enter email and password");
           setState(() => _isLoading = false);
           return;
         }
@@ -141,18 +140,23 @@ class _LoginPageState extends State<LoginPage> {
         body: body,
       );
 
+      log("Login Response: ${res.body}"); // Debugging
+
       final data = jsonDecode(res.body);
       if (res.statusCode == 200 && data['success'] == true) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('auth_token', data['token']);
-        await prefs.setString('user_name', data['data']['name']);
+        if(data['data'] != null && data['data']['name'] != null) {
+           await prefs.setString('user_name', data['data']['name']);
+        }
         if(mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const MainScreen()));
       } else {
         if(isGoogle) await _googleSignIn.signOut();
-        if(mounted) _alert("LOGIN FAILED", data['message'] ?? "UNAUTHORIZED");
+        if(mounted) _alert("LOGIN FAILED", data['message'] ?? "Unauthorized access");
       }
     } catch (e) {
-      if(mounted) _alert("SYSTEM FAILURE", e.toString());
+      log("Login Error: $e");
+      if(mounted) _alert("SYSTEM ERROR", "Connection failed. Check your internet or server URL.");
     } finally {
       if(mounted) setState(() => _isLoading = false);
     }
@@ -164,7 +168,7 @@ class _LoginPageState extends State<LoginPage> {
       shape: RoundedRectangleBorder(side: const BorderSide(color: hlRed), borderRadius: BorderRadius.circular(4)),
       title: Text(title, style: GoogleFonts.orbitron(color: hlRed, fontWeight: FontWeight.bold)),
       content: Text(msg, style: GoogleFonts.shareTechMono(color: Colors.white)),
-      actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("ACKNOWLEDGE", style: TextStyle(color: hlOrange)))]
+      actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("CLOSE", style: TextStyle(color: hlOrange)))]
     ));
   }
 
@@ -182,22 +186,18 @@ class _LoginPageState extends State<LoginPage> {
                 const SizedBox(height: 20),
                 Text("HELPDESK ACCESS", style: GoogleFonts.orbitron(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 2)),
                 const SizedBox(height: 40),
-                
-                // Input Email
                 TextField(
                   controller: _emailCtrl, 
                   style: GoogleFonts.shareTechMono(color: hlOrange), 
-                  decoration: const InputDecoration(labelText: "IDENTITY (EMAIL)", prefixIcon: Icon(Icons.person, color: hlOrange))
+                  decoration: const InputDecoration(labelText: "EMAIL", prefixIcon: Icon(Icons.person, color: hlOrange))
                 ),
                 const SizedBox(height: 16),
-                
-                // Input Password dengan Icon Mata
                 TextField(
                   controller: _passCtrl, 
                   obscureText: _isObscure, 
                   style: GoogleFonts.shareTechMono(color: hlOrange), 
                   decoration: InputDecoration(
-                    labelText: "PASSCODE", 
+                    labelText: "PASSWORD", 
                     prefixIcon: const Icon(Icons.lock, color: hlOrange),
                     suffixIcon: IconButton(
                       icon: Icon(_isObscure ? Icons.visibility_off : Icons.visibility, color: hlOrange),
@@ -205,9 +205,7 @@ class _LoginPageState extends State<LoginPage> {
                     )
                   )
                 ),
-                
                 const SizedBox(height: 24),
-                
                 if (_isLoading) 
                   const CircularProgressIndicator(color: hlOrange) 
                 else Column(
@@ -215,14 +213,14 @@ class _LoginPageState extends State<LoginPage> {
                     SizedBox(width: double.infinity, child: ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: hlOrange, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
                       onPressed: () => _login(false),
-                      child: Text("INITIATE LOGIN", style: GoogleFonts.orbitron(fontWeight: FontWeight.bold)),
+                      child: Text("LOGIN", style: GoogleFonts.orbitron(fontWeight: FontWeight.bold)),
                     )),
                     const SizedBox(height: 16),
                     SizedBox(width: double.infinity, child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.white54), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
                       onPressed: () => _login(true),
                       icon: const Icon(Icons.g_mobiledata, color: Colors.white),
-                      label: Text("GOOGLE SSO", style: GoogleFonts.shareTechMono(color: Colors.white)),
+                      label: Text("GOOGLE LOGIN", style: GoogleFonts.shareTechMono(color: Colors.white)),
                     )),
                   ],
                 )
@@ -235,7 +233,7 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-// === 3. MAIN SCREEN (TABS) ===
+// === 3. MAIN SCREEN ===
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
   @override
@@ -245,8 +243,8 @@ class MainScreen extends StatefulWidget {
 class _MainScreenState extends State<MainScreen> {
   int _index = 0;
   final List<Widget> _pages = [
-    const MyTicketListPage(), // Fitur Baru
-    const SearchTicketPage(), // Fitur Lama
+    const MyTicketListPage(),
+    const SearchTicketPage(),
   ];
 
   void _logout() async {
@@ -260,11 +258,11 @@ class _MainScreenState extends State<MainScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("SERVICEDESK // POLINDRA", style: GoogleFonts.orbitron(letterSpacing: 2, color: hlOrange, fontSize: 18)),
+        title: Text("POLINDRA HELPDESK", style: GoogleFonts.orbitron(letterSpacing: 2, color: hlOrange, fontSize: 18)),
         backgroundColor: Colors.black,
         centerTitle: true,
         bottom: PreferredSize(preferredSize: const Size.fromHeight(2), child: Container(color: hlOrange, height: 2)),
-        actions: [IconButton(onPressed: _logout, icon: const Icon(Icons.power_settings_new, color: hlRed))],
+        actions: [IconButton(onPressed: _logout, icon: const Icon(Icons.logout, color: hlRed))],
       ),
       body: _pages[_index],
       bottomNavigationBar: BottomNavigationBar(
@@ -272,19 +270,17 @@ class _MainScreenState extends State<MainScreen> {
         selectedItemColor: hlOrange,
         unselectedItemColor: Colors.grey,
         currentIndex: _index,
-        selectedLabelStyle: GoogleFonts.orbitron(fontSize: 10),
-        unselectedLabelStyle: GoogleFonts.orbitron(fontSize: 10),
         onTap: (i) => setState(() => _index = i),
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.list_alt), label: "MY TICKETS"),
-          BottomNavigationBarItem(icon: Icon(Icons.qr_code_scanner), label: "SEARCH"),
+          BottomNavigationBarItem(icon: Icon(Icons.list_alt), label: "My Tickets"),
+          BottomNavigationBarItem(icon: Icon(Icons.search), label: "Search"),
         ],
       ),
     );
   }
 }
 
-// === 4. FITUR BARU: LIST TIKET SAYA ===
+// === 4. LIST TIKET SAYA (FIXED) ===
 class MyTicketListPage extends StatefulWidget {
   const MyTicketListPage({super.key});
   @override
@@ -300,12 +296,12 @@ class _MyTicketListPageState extends State<MyTicketListPage> {
   void initState() { super.initState(); _loadTickets(); }
 
   Future<void> _loadTickets() async {
+    if(!mounted) return;
     setState(() { loading = true; error = null; });
     try {
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('auth_token');
       
-      // Request ke endpoint baru: /api/tiket/my-tickets
       final res = await http.get(
         Uri.parse("$apiBaseUrl/tiket/my-tickets"),
         headers: {
@@ -318,29 +314,46 @@ class _MyTicketListPageState extends State<MyTicketListPage> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         if (data['success'] == true) {
-          setState(() => tickets = data['data']);
+          // SAFE PARSING: Ensure data['data'] is treated as list even if empty
+          setState(() {
+            if (data['data'] is List) {
+              tickets = data['data'];
+            } else {
+              tickets = []; // Fallback if data is not list
+            }
+          });
         } else {
           setState(() => error = data['message']);
         }
       } else {
-        setState(() => error = "SERVER ERROR: ${res.statusCode}");
+        setState(() => error = "Server Error: ${res.statusCode}");
       }
     } catch (e) {
-      setState(() => error = "CONNECTION FAILED");
+      log("Fetch Error: $e");
+      setState(() => error = "Connection failed");
     } finally {
       if (mounted) setState(() => loading = false);
     }
   }
 
-  // --- Fungsi Format Status ---
-  String _cleanStatus(String rawStatus) {
-    return rawStatus.replaceAll('_', ' ').toUpperCase();
+  // Helper untuk memformat tanggal dengan aman
+  String _safeDate(dynamic dateString) {
+    if (dateString == null) return '-';
+    try {
+      return DateFormat('dd MMM yy HH:mm').format(DateTime.parse(dateString.toString()));
+    } catch (e) {
+      return '-';
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     if (loading) return const Center(child: CircularProgressIndicator(color: hlOrange));
-    if (error != null) return Center(child: Text(error!, style: GoogleFonts.shareTechMono(color: hlRed)));
+    if (error != null) return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+      Text(error!, style: GoogleFonts.shareTechMono(color: hlRed)),
+      const SizedBox(height: 10),
+      ElevatedButton(onPressed: _loadTickets, style: ElevatedButton.styleFrom(backgroundColor: hlOrange), child: const Text("RETRY", style: TextStyle(color: Colors.black)))
+    ]));
     if (tickets.isEmpty) return Center(child: Text("NO DATA FOUND", style: GoogleFonts.orbitron(color: Colors.grey)));
 
     return RefreshIndicator(
@@ -355,24 +368,25 @@ class _MyTicketListPageState extends State<MyTicketListPage> {
           final t = tickets[i];
           final riwayat = (t['riwayat_status'] as List?) ?? [];
           
-          // --- Logic Status ---
           String currentStatus = t['status'] ?? 'PENDING';
           if (riwayat.isNotEmpty) {
-            // Ambil status terbaru dari riwayat (biasanya index 0 karena desc)
-            currentStatus = riwayat[0]['status'];
+            currentStatus = riwayat[0]['status'] ?? 'PENDING';
           }
           
-          // --- Logic Unit (Fix Unit get) ---
-          final unitName = t['unit']?['nama_unit'] 
-                         ?? t['layanan']?['unit']?['nama_unit'] 
-                         ?? 'UNIT N/A';
+          // Logic Unit dengan Null Safety Ekstra
+          String unitName = 'UNIT N/A';
+          if (t['unit'] != null && t['unit']['nama_unit'] != null) {
+            unitName = t['unit']['nama_unit'];
+          } else if (t['layanan'] != null && t['layanan']['unit'] != null && t['layanan']['unit']['nama_unit'] != null) {
+            unitName = t['layanan']['unit']['nama_unit'];
+          }
 
           return InkWell(
             onTap: () {
-               Navigator.push(context, MaterialPageRoute(builder: (_) => TicketDetailPage(ticketId: t['no_tiket'])));
+               Navigator.push(context, MaterialPageRoute(builder: (_) => TicketDetailPage(ticketId: "${t['no_tiket']}")));
             },
             child: _HevCard(
-              title: "${t['no_tiket']}",
+              title: "${t['no_tiket'] ?? 'ID_ERROR'}",
               borderColor: _getStatusColor(currentStatus),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -380,8 +394,17 @@ class _MyTicketListPageState extends State<MyTicketListPage> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                       Expanded(child: Text(t['layanan']?['nama'] ?? 'UNKNOWN SERVICE', style: GoogleFonts.shareTechMono(color: Colors.white, fontWeight: FontWeight.bold), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                       _StatusBadge(status: _cleanStatus(currentStatus)), // Bersihkan status
+                       // Menggunakan Expanded agar text panjang tidak error
+                       Expanded(
+                         child: Text(
+                           t['layanan']?['nama'] ?? 'UNKNOWN SERVICE', 
+                           style: GoogleFonts.shareTechMono(color: Colors.white, fontWeight: FontWeight.bold), 
+                           maxLines: 1, 
+                           overflow: TextOverflow.ellipsis
+                         )
+                       ),
+                       const SizedBox(width: 8),
+                       _StatusBadge(status: currentStatus.replaceAll('_', ' ').toUpperCase()), 
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -390,7 +413,7 @@ class _MyTicketListPageState extends State<MyTicketListPage> {
                   Align(
                     alignment: Alignment.centerRight,
                     child: Text(
-                      DateFormat('dd MMM yy HH:mm').format(DateTime.parse(t['created_at'])),
+                      _safeDate(t['created_at']),
                       style: GoogleFonts.shareTechMono(fontSize: 10, color: hlOrange),
                     ),
                   )
@@ -406,12 +429,12 @@ class _MyTicketListPageState extends State<MyTicketListPage> {
   Color _getStatusColor(String s) {
     s = s.toLowerCase();
     if(s.contains('selesai')) return hlGreen;
-    if(s.contains('masalah') || s.contains('tolak')) return hlRed;
+    if(s.contains('tolak') || s.contains('masalah')) return hlRed;
     return hlOrange;
   }
 }
 
-// === 5. FITUR LAMA: PENCARIAN (Updated to handle view) ===
+// === 5. SEARCH PAGE ===
 class SearchTicketPage extends StatefulWidget {
   const SearchTicketPage({super.key});
   @override
@@ -428,7 +451,7 @@ class _SearchTicketPageState extends State<SearchTicketPage> {
           color: const Color(0xFF111111),
           padding: const EdgeInsets.all(20),
           child: Row(children: [
-            Expanded(child: TextField(controller: _ctrl, style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 18), decoration: const InputDecoration(labelText: "ENTER TICKET ID", prefixIcon: Icon(Icons.qr_code_scanner, color: hlOrange)))),
+            Expanded(child: TextField(controller: _ctrl, style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 18), decoration: const InputDecoration(labelText: "TICKET ID", prefixIcon: Icon(Icons.qr_code, color: hlOrange)))),
             const SizedBox(width: 12),
             InkWell(
               onTap: () {
@@ -447,14 +470,14 @@ class _SearchTicketPageState extends State<SearchTicketPage> {
         Expanded(child: Center(child: Opacity(opacity: 0.3, child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           const Icon(Icons.radar, size: 100, color: hlOrange),
           const SizedBox(height: 20),
-          Text("SCANNING FOR TARGET...", style: GoogleFonts.orbitron(color: hlOrange))
+          Text("SYSTEM READY", style: GoogleFonts.orbitron(color: hlOrange))
         ])))),
       ],
     );
   }
 }
 
-// === 6. DETAIL TIKET (REUSABLE) ===
+// === 6. TICKET DETAIL (FIXED) ===
 class TicketDetailPage extends StatefulWidget {
   final String ticketId;
   const TicketDetailPage({super.key, required this.ticketId});
@@ -494,10 +517,10 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
           setState(() => error = d['message']);
         }
       } else {
-        setState(() => error = "ERR: ${res.statusCode}");
+        setState(() => error = "Error ${res.statusCode}: Not Found");
       }
     } catch (e) {
-      setState(() => error = "NET FAIL");
+      setState(() => error = "Network Error");
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -509,6 +532,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('auth_token');
+      // Safety check
+      if (tiketData == null || tiketData!['id'] == null) return;
+
       final url = Uri.parse("$apiBaseUrl/tiket/${tiketData!['id']}/komentar");
       final res = await http.post(url, headers: {
         'Accept': 'application/json',
@@ -518,7 +544,9 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
 
       if (res.statusCode == 200) {
         _commentController.clear();
-        _fetch();
+        _fetch(); // Refresh data
+      } else {
+        log("Comment Error: ${res.body}");
       }
     } catch(e) { log("Err: $e"); }
     finally { if (mounted) setState(() => sending = false); }
@@ -528,7 +556,7 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("TARGET: ${widget.ticketId}", style: GoogleFonts.orbitron(color: hlOrange)),
+        title: Text("TICKET: ${widget.ticketId}", style: GoogleFonts.orbitron(color: hlOrange)),
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: hlOrange),
       ),
@@ -544,76 +572,79 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     final prodi = mahasiswa['program_studi'] ?? {};
     final jurusan = prodi['jurusan'] ?? {};
     final layananNama = data['layanan']?['nama'] ?? 'UNKNOWN';
-    // FIX Unit Logic di Detail Page juga
-    final unit = data['unit']?['nama_unit'] 
-              ?? data['layanan']?['unit']?['nama_unit'] 
-              ?? 'N/A';
+    
+    // FIX Unit Logic yang Robust
+    String unit = 'N/A';
+    if (data['unit'] != null && data['unit']['nama_unit'] != null) {
+      unit = data['unit']['nama_unit'];
+    } else if (data['layanan'] != null && data['layanan']['unit'] != null) {
+      unit = data['layanan']['unit']['nama_unit'] ?? 'N/A';
+    }
               
     final detailLayanan = data['detail'];
     final riwayat = (data['riwayat_status'] as List?) ?? [];
     
-    // Status Logic
     String status = data['status'] ?? 'PENDING';
-    if (riwayat.isNotEmpty) status = riwayat[0]['status'];
+    if (riwayat.isNotEmpty) status = riwayat[0]['status'] ?? status;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _HevCard(title: "SYSTEM STATUS", child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text("#${data['no_tiket']}", style: GoogleFonts.orbitron(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
-          _StatusBadge(status: status.replaceAll('_', ' ').toUpperCase()), // Format Status
+        _HevCard(title: "STATUS", child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Expanded(child: Text("#${data['no_tiket'] ?? '-'}", style: GoogleFonts.orbitron(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white))),
+          _StatusBadge(status: status.replaceAll('_', ' ').toUpperCase()), 
         ])),
         const SizedBox(height: 16),
 
         if (status == 'Diselesaikan_oleh_PIC' && deadlineTimer != null)
-           _HevCard(title: "CRITICAL TIMER", borderColor: hlRed, child: Column(children: [
-             Text("AUTO-CLOSE SEQUENCE INITIATED", style: GoogleFonts.shareTechMono(color: hlRed)),
+           _HevCard(title: "AUTO CLOSE TIMER", borderColor: hlRed, child: Column(children: [
+             Text("Ticket will close automatically in:", style: GoogleFonts.shareTechMono(color: hlRed)),
              const SizedBox(height: 8),
              CountdownTimer(deadlineStr: deadlineTimer!),
            ])),
         if (status == 'Diselesaikan_oleh_PIC' && deadlineTimer != null) const SizedBox(height: 16),
 
-        _HevCard(title: "PERSONNEL DATA", child: Column(children: [
+        _HevCard(title: "USER INFO", child: Column(children: [
           _InfoRow("NAMA", pemohon['name'] ?? mahasiswa['nama'] ?? 'N/A'),
-          _InfoRow("ID (NIM)", mahasiswa['nim'] ?? 'N/A'),
+          _InfoRow("NIM", mahasiswa['nim'] ?? 'N/A'),
           _InfoRow("JURUSAN", jurusan['nama_jurusan'] ?? 'N/A'),
-          _InfoRow("PRODI", prodi['program_studi'] ?? 'N/A'),
+          _InfoRow("PRODI", prodi['nama_prodi'] ?? 'N/A'),
         ])),
         const SizedBox(height: 16),
 
-        _HevCard(title: "REQUEST PARAMETERS", child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _InfoRow("LAYANAN", layananNama),
-          _InfoRow("UNIT", unit), // Unit sudah diperbaiki
+        _HevCard(title: "DETAILS", child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _InfoRow("SERVICE", layananNama),
+          _InfoRow("UNIT", unit),
           const Divider(color: Colors.white24, height: 24),
-          Text("DESKRIPSI:", style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 12)),
+          Text("DESCRIPTION:", style: GoogleFonts.shareTechMono(color: hlOrange, fontSize: 12)),
           const SizedBox(height: 4),
           Text(data['deskripsi'] ?? '-', style: GoogleFonts.shareTechMono(fontSize: 16)),
           if (data['lampiran'] != null) _AttachmentBtn(path: data['lampiran']),
         ])),
         const SizedBox(height: 16),
 
-        if (detailLayanan != null) _HevCard(title: "ENCRYPTED DATA BLOCK", borderColor: hlGreen, child: _buildDynamicSpecificData(layananNama, detailLayanan)),
+        if (detailLayanan != null) _HevCard(title: "SPECIFIC DATA", borderColor: hlGreen, child: _buildDynamicSpecificData(layananNama, detailLayanan)),
         if (detailLayanan != null) const SizedBox(height: 16),
 
-        _HevCard(title: "EVENT LOG", child: Column(children: riwayat.map((l) => Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _HevCard(title: "HISTORY", child: Column(children: riwayat.map((l) => Padding(padding: const EdgeInsets.only(bottom: 12), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(_formatDate(l['created_at'], timeOnly: true), style: GoogleFonts.shareTechMono(color: hlOrange)),
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(l['status'].toString().replaceAll('_', ' ').toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            Text("User: ${l['user']?['name'] ?? 'SYSTEM'}", style: const TextStyle(color: Colors.grey, fontSize: 12)),
+            Text((l['status'] ?? '-').toString().replaceAll('_', ' ').toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            Text("By: ${l['user']?['name'] ?? 'SYSTEM'}", style: const TextStyle(color: Colors.grey, fontSize: 12)),
           ]))
         ]))).toList())),
         const SizedBox(height: 16),
 
-        _HevCard(title: "COMM CHANNEL", child: Column(children: [
+        _HevCard(title: "COMMENTS", child: Column(children: [
           Row(children: [
-            Expanded(child: TextField(controller: _commentController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "TRANSMIT MESSAGE..."))),
+            Expanded(child: TextField(controller: _commentController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(hintText: "Type a message..."))),
             const SizedBox(width: 8),
             IconButton(onPressed: sending ? null : _postComment, icon: const Icon(Icons.send, color: hlOrange), style: IconButton.styleFrom(backgroundColor: Colors.black, side: const BorderSide(color: hlOrange)))
           ]),
           const SizedBox(height: 16),
-          if ((data['komentar'] as List).isEmpty) const Text("NO TRANSMISSIONS RECORDED", style: TextStyle(color: Colors.grey)),
-          ...(data['komentar'] as List).map((c) {
+          if ((data['komentar'] as List? ?? []).isEmpty) const Text("No comments yet.", style: TextStyle(color: Colors.grey)),
+          ...(data['komentar'] as List? ?? []).map((c) {
              final isMe = c['pengirim']?['role'] == 'mahasiswa';
              return Container(margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: isMe ? hlOrange.withOpacity(0.1) : hlGreen.withOpacity(0.1), border: Border(left: BorderSide(color: isMe ? hlOrange : hlGreen, width: 3))), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                Text(c['pengirim']?['name'] ?? 'UNKNOWN', style: TextStyle(fontWeight: FontWeight.bold, color: isMe ? hlOrange : hlGreen)),
@@ -626,37 +657,43 @@ class _TicketDetailPageState extends State<TicketDetailPage> {
     );
   }
 
-  // Reuse logic display (simplified for length)
   Widget _buildDynamicSpecificData(String namaLayanan, Map<String, dynamic> detail) {
     List<Widget> widgets = [];
     String lower = namaLayanan.toLowerCase();
+    
+    // Custom display untuk layanan Publikasi (contoh kasus)
     if (lower.contains('publikasi')) {
-      widgets.add(_InfoRow("Topik", detail['judul']));
-      widgets.add(_InfoRow("Kategori", detail['kategori']));
-      widgets.add(Text("CONTENT: ${detail['konten'] ?? '-'}", style: GoogleFonts.shareTechMono(fontSize: 14)));
+      if(detail['judul'] != null) widgets.add(_InfoRow("Topik", detail['judul']));
+      if(detail['kategori'] != null) widgets.add(_InfoRow("Kategori", detail['kategori']));
+      if(detail['konten'] != null) widgets.add(Text("CONTENT: ${detail['konten']}", style: GoogleFonts.shareTechMono(fontSize: 14)));
       if (detail['gambar'] != null) {
          String imgUrl = detail['gambar'].startsWith('http') ? detail['gambar'] : "$storageBaseUrl${detail['gambar']}";
          widgets.add(const SizedBox(height: 16));
-         widgets.add(Container(decoration: BoxDecoration(border: Border.all(color: hlGreen)), child: Image.network(imgUrl, fit: BoxFit.contain, errorBuilder: (ctx,e,s)=>const Text("IMAGE ERR", style: TextStyle(color: hlRed)))));
+         widgets.add(Container(height: 150, width: double.infinity, decoration: BoxDecoration(border: Border.all(color: hlGreen)), child: Image.network(imgUrl, fit: BoxFit.cover, errorBuilder: (ctx,e,s)=>const Center(child: Icon(Icons.broken_image, color: hlRed)))));
       }
     } else {
-      detail.forEach((k, v) { if (v is String && !['id','tiket_id','created_at','updated_at'].contains(k)) widgets.add(_InfoRow(k.toUpperCase().replaceAll('_', ' '), v)); });
+      // Default dynamic display
+      detail.forEach((k, v) { 
+        if (v is String && !['id','tiket_id','created_at','updated_at'].contains(k)) {
+          widgets.add(_InfoRow(k.toUpperCase().replaceAll('_', ' '), v)); 
+        }
+      });
     }
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: widgets);
   }
 
-  String _formatDate(String? d, {bool timeOnly = false}) {
+  String _formatDate(dynamic d, {bool timeOnly = false}) {
     if (d == null) return '-';
-    try { final dt = DateTime.parse(d); return timeOnly ? DateFormat('HH:mm').format(dt) : DateFormat('dd/MM/yy HH:mm').format(dt); } catch (e) { return d; }
+    try { final dt = DateTime.parse(d.toString()); return timeOnly ? DateFormat('HH:mm').format(dt) : DateFormat('dd/MM/yy HH:mm').format(dt); } catch (e) { return '-'; }
   }
 }
 
-// === WIDGET HELPERS (REUSED) ===
+// === WIDGET HELPERS ===
 class _HevCard extends StatelessWidget {
   final String title; final Widget child; final Color borderColor;
   const _HevCard({required this.title, required this.child, this.borderColor = hlOrange});
   @override
-  Widget build(BuildContext context) => Container(width: double.infinity, decoration: BoxDecoration(color: const Color(0xFF222222), border: Border.all(color: borderColor, width: 1.5)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Container(width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), color: borderColor.withOpacity(0.2), child: Text(title, style: GoogleFonts.orbitron(fontSize: 12, fontWeight: FontWeight.bold, color: borderColor, letterSpacing: 1.5))), Padding(padding: const EdgeInsets.all(16), child: child)]));
+  Widget build(BuildContext context) => Container(width: double.infinity, decoration: BoxDecoration(color: const Color(0xFF222222), border: Border.all(color: borderColor, width: 1.5), borderRadius: BorderRadius.circular(4)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Container(width: double.infinity, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), color: borderColor.withOpacity(0.2), child: Text(title, style: GoogleFonts.orbitron(fontSize: 12, fontWeight: FontWeight.bold, color: borderColor, letterSpacing: 1.5))), Padding(padding: const EdgeInsets.all(16), child: child)]));
 }
 class _InfoRow extends StatelessWidget {
   final String label; final String? value;
@@ -674,14 +711,14 @@ class _StatusBadge extends StatelessWidget {
     if (upper.contains('SELESAI')) c = hlGreen;
     if (upper.contains('TOLAK') || upper.contains('MASALAH')) c = hlRed;
     if (upper.contains('PROSES') || upper.contains('TANGANI')) c = hlOrange;
-    return Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(border: Border.all(color: c)), child: Text(upper, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 10)));
+    return Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(border: Border.all(color: c), borderRadius: BorderRadius.circular(4)), child: Text(upper, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 10)));
   }
 }
 class _AttachmentBtn extends StatelessWidget {
   final String path;
   const _AttachmentBtn({required this.path});
   @override
-  Widget build(BuildContext context) => GestureDetector(onTap: () { log("Open: $storageBaseUrl$path"); }, child: Container(margin: const EdgeInsets.only(top: 8), padding: const EdgeInsets.all(8), decoration: BoxDecoration(border: Border.all(color: hlOrange)), child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.folder_open, color: hlOrange, size: 16), const SizedBox(width: 8), Text("ACCESS ATTACHMENT", style: GoogleFonts.shareTechMono(color: hlOrange))])));
+  Widget build(BuildContext context) => GestureDetector(onTap: () { log("Open: $storageBaseUrl$path"); }, child: Container(margin: const EdgeInsets.only(top: 8), padding: const EdgeInsets.all(8), decoration: BoxDecoration(border: Border.all(color: hlOrange), borderRadius: BorderRadius.circular(4)), child: Row(mainAxisSize: MainAxisSize.min, children: [const Icon(Icons.folder_open, color: hlOrange, size: 16), const SizedBox(width: 8), Text("OPEN FILE", style: GoogleFonts.shareTechMono(color: hlOrange))])));
 }
 class CountdownTimer extends StatefulWidget {
   final String deadlineStr;
@@ -692,10 +729,17 @@ class CountdownTimer extends StatefulWidget {
 class _CountdownTimerState extends State<CountdownTimer> {
   late Timer _t; Duration _d = Duration.zero;
   @override
-  void initState() { super.initState(); _t = Timer.periodic(const Duration(seconds: 1), (_) => _tick()); }
-  void _tick() { if(mounted) setState(() => _d = DateTime.parse(widget.deadlineStr).difference(DateTime.now())); }
+  void initState() { super.initState(); _startTimer(); }
+  void _startTimer() {
+    try {
+      final end = DateTime.parse(widget.deadlineStr);
+      _t = Timer.periodic(const Duration(seconds: 1), (_) {
+        if(mounted) setState(() => _d = end.difference(DateTime.now()));
+      });
+    } catch(e) { _d = Duration.zero; }
+  }
   @override
-  void dispose() { _t.cancel(); super.dispose(); }
+  void dispose() { if(mounted) _t.cancel(); super.dispose(); }
   @override
-  Widget build(BuildContext context) => Text("${_d.inHours}:${_d.inMinutes % 60}:${_d.inSeconds % 60}", style: GoogleFonts.orbitron(fontSize: 32, color: hlRed, fontWeight: FontWeight.bold));
+  Widget build(BuildContext context) => Text(_d.isNegative ? "00:00:00" : "${_d.inHours}:${_d.inMinutes % 60}:${_d.inSeconds % 60}", style: GoogleFonts.orbitron(fontSize: 32, color: hlRed, fontWeight: FontWeight.bold));
 }
